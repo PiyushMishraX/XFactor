@@ -49,6 +49,7 @@ from app.services.approval_service import (
     ApprovalService,
 )
 from app.services.execution import ExecutionAdapter, ExecutionService, get_execution_adapter
+from app.services.workflow_history import record_workflow_run
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +182,22 @@ def decide(
                 request=body,
                 workflow=workflow,
             )
+            try:
+                snapshot = workflow.snapshot(thread_id=thread_id)
+            except Exception:  # noqa: BLE001 - the decision already committed
+                snapshot = None
+                logger.exception(
+                    "Could not read the post-decision state for thread %s", thread_id
+                )
+        values = dict(getattr(snapshot, "values", None) or {})
+        if values:
+            try:
+                record_workflow_run(session, thread_id, values)
+            except Exception:  # noqa: BLE001 - history must not fail the decision
+                session.rollback()
+                logger.exception(
+                    "Could not update the workflow run history for thread %s", thread_id
+                )
     except Exception as exc:  # noqa: BLE001
         raise _http_error(exc) from exc
     return outcome.model_dump(mode="json")

@@ -1,24 +1,29 @@
-"""SAP connector (Step 2) — **read-only**.
+"""SAP connector (Steps 2 and 7) — **read-only**.
 
 Exposes SAP master and transactional data (shipments, suppliers, inventory
-positions, purchase orders) to the agents. Only read operations are defined: this
-connector can never create, change or delete anything in SAP. Executive actions
-belong to later steps and must go through human approval, not this module.
+positions, purchase orders and material master data) to the agents. Only read
+operations are defined here: this connector can never create, change or delete
+anything in SAP. Authorized writes live in :mod:`app.integrations.sap_write` and
+require recorded human approval.
 
-Two adapters are provided:
+Three adapters are provided:
 
 * :class:`SimulatedSAPConnector` — clearly labelled sample data (``is_mock=True``)
   used while ``SAP_USE_MOCK`` is true, which is the default. Its shipments and
   suppliers mirror :mod:`app.services.reference_data` so the connector and the
   seeded PostgreSQL rows describe the same records.
 * :class:`HttpSAPConnector` — a live read-only adapter used when SAP credentials
-  are configured and ``SAP_USE_MOCK`` is false.
+  are configured and ``SAP_USE_MOCK`` is false. The relative paths come from the
+  prepared profile selected by ``SAP_API_FAMILY`` (see
+  :mod:`app.integrations.sap_profiles`).
+* Authentication is OAuth2 client credentials when ``SAP_AUTH_URL`` is
+  configured (read scope only), otherwise the gateway ``x-api-key`` convention.
 
 Assumptions
 -----------
 * The live adapter reaches SAP through an API gateway that presents the
-  OData/REST endpoints below and accepts an ``x-api-key`` header; SAP
-  OAuth client-credentials are terminated at that gateway.
+  OData/REST endpoints of the selected profile. The profile paths are prepared
+  defaults and must be confirmed against the tenant's service catalogue.
 * Every returned record carries :class:`~app.integrations.base.Provenance`, so
   simulated SAP data can never be mistaken for a live SAP system.
 """
@@ -39,6 +44,8 @@ from app.integrations.base import (
     MockConnector,
     Provenance,
 )
+from app.integrations.sap_auth import SAPHttpClient, sap_token_provider
+from app.integrations.sap_profiles import SAPApiProfile, resolve_sap_profile
 from app.services.reference_data import DEMO_SHIPMENTS, DEMO_SUPPLIERS
 
 logger = logging.getLogger(__name__)
@@ -81,6 +88,17 @@ class SAPInventoryItem(BaseModel):
     provenance: Provenance
 
 
+class SAPMaterial(BaseModel):
+    """Material master data as SAP holds it."""
+
+    material_id: str
+    description: str
+    material_type: str
+    base_unit: str
+    category: str
+    provenance: Provenance
+
+
 class SAPPurchaseOrder(BaseModel):
     """An open purchase order."""
 
@@ -113,6 +131,10 @@ class SAPConnector(Protocol):
     def get_inventory_item(self, *, material_id: str) -> Optional[SAPInventoryItem]: ...
 
     def list_inventory(self) -> List[SAPInventoryItem]: ...
+
+    def get_material(self, *, material_id: str) -> Optional[SAPMaterial]: ...
+
+    def list_materials(self) -> List[SAPMaterial]: ...
 
     def list_purchase_orders(self, *, supplier_id: Optional[str] = None) -> List[SAPPurchaseOrder]: ...
 
@@ -174,6 +196,45 @@ _SAMPLE_INVENTORY: Sequence[Dict[str, Any]] = (
         "on_hand_units": 5400.0,
         "safety_stock_units": 2000.0,
         "reorder_point_units": 4000.0,
+    },
+)
+
+#: Sample material master records matching the inventory sample.
+_SAMPLE_MATERIALS: Sequence[Dict[str, Any]] = (
+    {
+        "material_id": "MAT-PHARMA-001",
+        "description": "Paracetamol API",
+        "material_type": "Raw material",
+        "base_unit": "KG",
+        "category": "Pharmaceutical",
+    },
+    {
+        "material_id": "MAT-CHEM-002",
+        "description": "Speciality polymer additive",
+        "material_type": "Raw material",
+        "base_unit": "KG",
+        "category": "Chemicals",
+    },
+    {
+        "material_id": "MAT-ELEC-003",
+        "description": "PCB assembly (8-layer)",
+        "material_type": "Finished good",
+        "base_unit": "EA",
+        "category": "Electronics",
+    },
+    {
+        "material_id": "MAT-POLY-004",
+        "description": "PET resin grade A",
+        "material_type": "Raw material",
+        "base_unit": "KG",
+        "category": "Polymers",
+    },
+    {
+        "material_id": "MAT-STEEL-005",
+        "description": "Cold-rolled steel coil",
+        "material_type": "Raw material",
+        "base_unit": "KG",
+        "category": "Metals",
     },
 )
 
@@ -269,6 +330,20 @@ class SimulatedSAPConnector(MockConnector):
                 return _inventory_from(row, provenance)
         return None
 
+    def list_materials(self) -> List[SAPMaterial]:
+        provenance = self._prov()
+        return [_material_from(row, provenance) for row in _SAMPLE_MATERIALS]
+
+    def get_material(self, *, material_id: str) -> Optional[SAPMaterial]:
+        key = (material_id or "").strip()
+        if not key:
+            raise ValueError("material_id must be a non-empty string")
+        provenance = self._prov()
+        for row in _SAMPLE_MATERIALS:
+            if str(row["material_id"]) == key:
+                return _material_from(row, provenance)
+        return None
+
     def list_purchase_orders(self, *, supplier_id: Optional[str] = None) -> List[SAPPurchaseOrder]:
         provenance = self._prov()
         key = (supplier_id or "").strip()
@@ -285,81 +360,129 @@ class HttpSAPConnector(HttpConnector):
     name = "sap"
     provider = "Live SAP system (read-only)"
 
-    def __init__(self, settings: Optional[Settings] = None, client: Optional[HttpJsonClient] = None) -> None:
+    def __init__(
+        self,
+        settings: Optional[Settings] = None,
+        client: Optional[HttpJsonClient] = None,
+        *,
+        profile: Optional[SAPApiProfile] = None,
+    ) -> None:
         settings = settings or get_settings()
-        super().__init__(
-            client
-            or HttpJsonClient(
-                connector_name=self.name,
-                base_url=settings.SAP_BASE_URL,
-                api_key=settings.SAP_CLIENT_SECRET,
-                timeout=settings.INTEGRATION_TIMEOUT_SECONDS,
-                max_attempts=settings.INTEGRATION_MAX_ATTEMPTS,
-            )
-        )
+        self._profile = profile or resolve_sap_profile(settings)
+        if client is None:
+            tokens = sap_token_provider(settings, scope=settings.SAP_READ_SCOPE)
+            if tokens is not None:
+                client = SAPHttpClient(
+                    connector_name=self.name,
+                    base_url=settings.SAP_BASE_URL,
+                    timeout=settings.INTEGRATION_TIMEOUT_SECONDS,
+                    max_attempts=settings.INTEGRATION_MAX_ATTEMPTS,
+                    tokens=tokens,
+                )
+            else:
+                client = HttpJsonClient(
+                    connector_name=self.name,
+                    base_url=settings.SAP_BASE_URL,
+                    api_key=settings.SAP_CLIENT_SECRET,
+                    timeout=settings.INTEGRATION_TIMEOUT_SECONDS,
+                    max_attempts=settings.INTEGRATION_MAX_ATTEMPTS,
+                )
+        super().__init__(client)
+
+    @property
+    def profile(self) -> SAPApiProfile:
+        """The prepared SAP API profile this connector is bound to."""
+        return self._profile
 
     def _prov(self, path: str) -> Provenance:
         return self.provenance(endpoint=f"{self.client.base_url}{path}")
 
     def list_shipments(self) -> List[SAPShipment]:
-        payload = self.client.get_json("/shipments")
+        path = self._profile.read_path("shipments")
+        payload = self.client.get_json(path)
         records = payload.get("value", payload) if isinstance(payload, dict) else payload
-        provenance = self._prov("/shipments")
+        provenance = self._prov(path)
         return [_shipment_from(record, provenance, live=True) for record in records]
 
     def get_shipment(self, *, shipment_id: str) -> Optional[SAPShipment]:
+        path = f"{self._profile.read_path('shipments')}/{shipment_id}"
         try:
-            payload = self.client.get_json(f"/shipments/{shipment_id}")
+            payload = self.client.get_json(path)
         except IntegrationRequestError as exc:
-            if "404" in str(exc):
+            if _is_not_found(exc):
                 return None
             raise
         record = payload[0] if isinstance(payload, list) and payload else payload
         if not isinstance(record, Mapping):
             return None
-        return _shipment_from(record, self._prov(f"/shipments/{shipment_id}"), live=True)
+        return _shipment_from(record, self._prov(path), live=True)
 
     def list_suppliers(self) -> List[SAPSupplier]:
-        payload = self.client.get_json("/suppliers")
+        path = self._profile.read_path("suppliers")
+        payload = self.client.get_json(path)
         records = payload.get("value", payload) if isinstance(payload, dict) else payload
-        provenance = self._prov("/suppliers")
+        provenance = self._prov(path)
         return [_supplier_from(record, provenance, live=True) for record in records]
 
     def get_supplier(self, *, supplier_id: str) -> Optional[SAPSupplier]:
+        path = f"{self._profile.read_path('suppliers')}/{supplier_id}"
         try:
-            payload = self.client.get_json(f"/suppliers/{supplier_id}")
+            payload = self.client.get_json(path)
         except IntegrationRequestError as exc:
-            if "404" in str(exc):
+            if _is_not_found(exc):
                 return None
             raise
         record = payload[0] if isinstance(payload, list) and payload else payload
         if not isinstance(record, Mapping):
             return None
-        return _supplier_from(record, self._prov(f"/suppliers/{supplier_id}"), live=True)
+        return _supplier_from(record, self._prov(path), live=True)
 
     def list_inventory(self) -> List[SAPInventoryItem]:
-        payload = self.client.get_json("/inventory")
+        path = self._profile.read_path("inventory")
+        payload = self.client.get_json(path)
         records = payload.get("value", payload) if isinstance(payload, dict) else payload
-        provenance = self._prov("/inventory")
+        provenance = self._prov(path)
         return [_inventory_from(record, provenance, live=True) for record in records]
 
     def get_inventory_item(self, *, material_id: str) -> Optional[SAPInventoryItem]:
+        path = f"{self._profile.read_path('inventory')}/{material_id}"
         try:
-            payload = self.client.get_json(f"/inventory/{material_id}")
+            payload = self.client.get_json(path)
         except IntegrationRequestError as exc:
-            if "404" in str(exc):
+            if _is_not_found(exc):
                 return None
             raise
         record = payload[0] if isinstance(payload, list) and payload else payload
         if not isinstance(record, Mapping):
             return None
-        return _inventory_from(record, self._prov(f"/inventory/{material_id}"), live=True)
+        return _inventory_from(record, self._prov(path), live=True)
+
+    def list_materials(self) -> List[SAPMaterial]:
+        path = self._profile.read_path("materials")
+        payload = self.client.get_json(path)
+        records = payload.get("value", payload) if isinstance(payload, dict) else payload
+        provenance = self._prov(path)
+        return [_material_from(record, provenance, live=True) for record in records]
+
+    def get_material(self, *, material_id: str) -> Optional[SAPMaterial]:
+        path = f"{self._profile.read_path('materials')}/{material_id}"
+        try:
+            payload = self.client.get_json(path)
+        except IntegrationRequestError as exc:
+            if _is_not_found(exc):
+                return None
+            raise
+        record = payload[0] if isinstance(payload, list) and payload else payload
+        if not isinstance(record, Mapping):
+            return None
+        return _material_from(record, self._prov(path), live=True)
 
     def list_purchase_orders(self, *, supplier_id: Optional[str] = None) -> List[SAPPurchaseOrder]:
+        path = self._profile.read_path("purchase_orders")
         params = {"supplier_id": supplier_id} if supplier_id else None
-        payload = self.client.get_json("/purchase-orders", params=params)
+        payload = self.client.get_json(path, params=params)
         records = payload.get("value", payload) if isinstance(payload, dict) else payload
-        provenance = self._prov("/purchase-orders")
+        provenance = self._prov(path)
         return [_purchase_order_from(record, provenance, live=True) for record in records]
 
 
@@ -419,16 +542,36 @@ def _purchase_order_from(
     )
 
 
+def _material_from(
+    row: Mapping[str, Any], provenance: Provenance, *, live: bool = False
+) -> SAPMaterial:
+    """Map a SAP material-master record onto the platform's own model."""
+    return SAPMaterial(
+        material_id=str(row.get("material_id") or row.get("id") or ""),
+        description=str(row.get("description") or ""),
+        material_type=str(row.get("material_type") or ""),
+        base_unit=str(row.get("base_unit") or ""),
+        category=str(row.get("category") or ""),
+        provenance=provenance,
+    )
+
+
+def _is_not_found(exc: IntegrationRequestError) -> bool:
+    """True when a read failure means "this record does not exist"."""
+    return exc.status_code == 404 or "HTTP 404" in str(exc)
+
+
 def get_sap_connector(settings: Optional[Settings] = None) -> SAPConnector:
     """Return the SAP connector appropriate for the current configuration.
 
     Returns the simulated read-only connector while ``SAP_USE_MOCK`` is true (the
     default), and the live read-only adapter when SAP credentials are configured
-    and mocks are disabled.
+    and mocks are disabled. The live adapter is bound to the prepared profile
+    selected by ``SAP_API_FAMILY``.
 
     Raises:
         IntegrationNotConfiguredError: Mock mode is off but no SAP credentials
-            are configured — the platform refuses to guess.
+            are configured, or ``SAP_API_FAMILY`` names an unknown profile.
     """
     settings = settings or get_settings()
     if settings.SAP_USE_MOCK:
@@ -440,4 +583,6 @@ def get_sap_connector(settings: Optional[Settings] = None) -> SAPConnector:
             "SAP_CLIENT_SECRET are not all configured. Configure them or set "
             "SAP_USE_MOCK=true."
         )
-    return HttpSAPConnector(settings)
+    profile = resolve_sap_profile(settings)
+    logger.info("SAP read connector using the %s profile.", profile.display_name)
+    return HttpSAPConnector(settings, profile=profile)

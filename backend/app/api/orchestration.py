@@ -28,6 +28,7 @@ from app.orchestration.state import RecoveryRequest
 from app.orchestration.workflow import pending_interrupt, supervisor_runtime
 from app.services.approval_repository import PostgresApprovalRepository
 from app.services.approval_service import record_pending_approval
+from app.services.workflow_history import record_workflow_run
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,12 @@ def start_workflow(
             logger.exception(
                 "Could not persist the pending approval for thread %s", thread_id
             )
+
+    try:
+        record_workflow_run(session, thread_id, result)
+    except Exception:  # noqa: BLE001 - history must not lose a workflow result
+        session.rollback()
+        logger.exception("Could not record the workflow run for thread %s", thread_id)
 
     return _serialise(thread_id, result)
 

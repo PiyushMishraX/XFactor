@@ -57,7 +57,15 @@ class IntegrationNotConfiguredError(IntegrationError):
 
 
 class IntegrationRequestError(IntegrationError):
-    """The provider was unreachable or returned an unusable response."""
+    """The provider was unreachable or returned an unusable response.
+
+    ``status_code`` is the HTTP status when one was received, so callers can
+    distinguish a rejected request (4xx) from a transport/upstream failure.
+    """
+
+    def __init__(self, message: str, *, status_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +210,7 @@ class HttpJsonClient:
         last_error: Optional[str] = None
 
         for attempt in range(1, self._max_attempts + 1):
+            retry_after: Optional[float] = None
             try:
                 response = self._request(
                     url, params, method=method, json_body=json_body, headers=headers
@@ -219,6 +228,7 @@ class HttpJsonClient:
             else:
                 if response.status_code in RETRYABLE_STATUS_CODES:
                     last_error = f"HTTP {response.status_code}: {_truncate(response.text)}"
+                    retry_after = _retry_after_seconds(response)
                     logger.warning(
                         "%s returned a retryable status (attempt %s/%s): %s",
                         self._connector_name,
@@ -229,13 +239,16 @@ class HttpJsonClient:
                 elif response.status_code >= 400:
                     raise IntegrationRequestError(
                         f"{self._connector_name} returned HTTP {response.status_code} for "
-                        f"{url}: {_truncate(response.text)}"
+                        f"{url}: {_truncate(response.text)}",
+                        status_code=response.status_code,
                     )
                 else:
                     return self._decode(response, url)
 
             if attempt < self._max_attempts:
-                time.sleep(self._backoff_seconds * attempt)
+                time.sleep(
+                    retry_after if retry_after is not None else self._backoff_seconds * attempt
+                )
 
         raise IntegrationRequestError(
             f"{self._connector_name} failed after {self._max_attempts} attempts for {url}. "
@@ -283,6 +296,26 @@ def _truncate(text: str, limit: int = 300) -> str:
     """Keep error messages readable when a provider returns a large body."""
     cleaned = " ".join((text or "").split())
     return cleaned if len(cleaned) <= limit else f"{cleaned[:limit]}..."
+
+
+#: A hostile or mistaken ``Retry-After`` must never stall the process for long.
+MAX_RETRY_AFTER_SECONDS = 30.0
+
+
+def _retry_after_seconds(response: httpx.Response) -> Optional[float]:
+    """Parse a numeric ``Retry-After`` header, clamped to a safe maximum.
+
+    HTTP-date values are not parsed; the caller then falls back to the normal
+    back-off. Returning ``None`` means "no usable hint".
+    """
+    raw = (response.headers.get("Retry-After") or "").strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        return None
+    return max(0.0, min(seconds, MAX_RETRY_AFTER_SECONDS))
 
 
 # ---------------------------------------------------------------------------

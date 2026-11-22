@@ -236,52 +236,52 @@ Derived from `DEVELOPMENT_ROADMAP.txt`. Statuses:
 
 ---
 
-## STEP 7 — SAP Integration
+## STEP 7 — SAP Integration ✅
 
-- [ ] Modular SAP connector
-- [ ] Environment-based authentication
-- [ ] Explore/prepare connectors: SAP S/4HANA
-- [ ] Explore/prepare connectors: SAP Business Accelerator Hub APIs
-- [ ] Explore/prepare connectors: SAP BTP
-- [ ] Explore/prepare connectors: SAP Integration Suite
-- [ ] Read: shipment information
-- [ ] Read: purchase orders
-- [ ] Read: supplier records
-- [ ] Read: inventory levels
-- [ ] Read: material information
-- [ ] Write: shipment plan updates (where supported)
-- [ ] Write: inventory transfer requests (where supported)
-- [ ] Write: approved operational changes
-- [ ] Request validation
-- [ ] Rate-limit and API-failure handling
-- [ ] Log requests/responses without exposing secrets
-- [ ] Separate read and write permissions
-- [ ] Approval required before sensitive write operations
-- [ ] Labelled mock SAP adapter if sandbox credentials are unavailable
+- [x] Modular SAP connector
+- [x] Environment-based authentication
+- [x] Explore/prepare connectors: SAP S/4HANA
+- [x] Explore/prepare connectors: SAP Business Accelerator Hub APIs
+- [x] Explore/prepare connectors: SAP BTP
+- [x] Explore/prepare connectors: SAP Integration Suite
+- [x] Read: shipment information
+- [x] Read: purchase orders
+- [x] Read: supplier records
+- [x] Read: inventory levels
+- [x] Read: material information
+- [x] Write: shipment plan updates (where supported)
+- [x] Write: inventory transfer requests (where supported)
+- [x] Write: approved operational changes
+- [x] Request validation
+- [x] Rate-limit and API-failure handling
+- [x] Log requests/responses without exposing secrets
+- [x] Separate read and write permissions
+- [x] Approval required before sensitive write operations
+- [x] Labelled mock SAP adapter if sandbox credentials are unavailable
 
 ---
 
-## STEP 8 — Agent Activity and Decision Dashboard
+## STEP 8 — Agent Activity and Decision Dashboard ✅
 
-- [ ] Overview page
-- [ ] Disruption Monitoring page
-- [ ] Agent Activity page (**highest priority**)
-- [ ] Scenario Comparison page
-- [ ] Approval Center page
-- [ ] Shipment Management page
-- [ ] Inventory Management page
-- [ ] Audit History page
-- [ ] Agent Activity: workflow ID, active disruption, supervisor decision
-- [ ] Agent Activity: five agents, execution status, current task, tools invoked
-- [ ] Agent Activity: structured results, handoffs, replanning events, progress, errors/retries
-- [ ] React Flow agent workflow visualisation
-- [ ] Scenario Comparison: route, delivery time, cost, risk, inventory impact, compliance, recommendation
-- [ ] Approval Center: proposed action, reason, cost/risk impact, validations, controls, history
-- [ ] Enterprise control-tower design (dark navy / clean light theme)
-- [ ] Responsive layout, professional status indicators, interactive charts
-- [ ] Every page connected to actual FastAPI endpoints
-- [ ] Loading, error and empty states
-- [ ] No hardcoded fake agent execution results
+- [x] Overview page
+- [x] Disruption Monitoring page
+- [x] Agent Activity page (**highest priority**)
+- [x] Scenario Comparison page
+- [x] Approval Center page
+- [x] Shipment Management page
+- [x] Inventory Management page
+- [x] Audit History page
+- [x] Agent Activity: workflow ID, active disruption, supervisor decision
+- [x] Agent Activity: five agents, execution status, current task, tools invoked
+- [x] Agent Activity: structured results, handoffs, replanning events, progress, errors/retries
+- [x] React Flow agent workflow visualisation
+- [x] Scenario Comparison: route, delivery time, cost, risk, inventory impact, compliance, recommendation
+- [x] Approval Center: proposed action, reason, cost/risk impact, validations, controls, history
+- [x] Enterprise control-tower design (dark navy / clean light theme)
+- [x] Responsive layout, professional status indicators, interactive charts
+- [x] Every page connected to actual FastAPI endpoints
+- [x] Loading, error and empty states
+- [x] No hardcoded fake agent execution results
 
 ---
 
@@ -383,7 +383,7 @@ Derived from `DEVELOPMENT_ROADMAP.txt`. Statuses:
 | 4 — LangGraph Supervisor | ✅ Complete |
 | 5 — Collaboration + Replanning | ✅ Complete |
 | 6 — Human-in-the-Loop + Execution | ✅ Complete |
-| 7 — SAP Integration | ⬜ Not started |
+| 7 — SAP Integration | ✅ Complete |
 | 8 — Agent Activity Dashboard | ⬜ Not started |
 | 9 — Testing + E2E Validation | ⬜ Not started |
 | 10 — Deployment + Demo | ⬜ Not started |

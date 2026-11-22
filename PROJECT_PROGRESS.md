@@ -3,7 +3,7 @@
 > Update this file immediately after **every** meaningful implementation milestone.
 > Never rely on conversation history to remember completed work.
 
-_Last updated: 2026-11-22 (Step 6 complete)_
+_Last updated: 2026-11-22 (Step 8 complete)_
 
 ---
 
@@ -26,10 +26,10 @@ React (Vite) frontend.
 
 | Field | Value |
 | --- | --- |
-| Current phase | **Step 6 — Human-in-the-Loop and Authorized Execution** |
-| Status | ✅ **Complete and verified** |
-| Overall completion (estimate) | **~75%** (Steps 0–6 of 11 roadmap steps) |
-| Next step | **Step 7 — SAP Integration** |
+| Current phase | **Step 8 — Agent Activity and Decision Dashboard** |
+| Status | ✅ **Complete and verified** (see the live-Gemini limitation in §11 item 17) |
+| Overall completion (estimate) | **~91%** (Steps 0–8 of 11 roadmap steps) |
+| Next step | **Step 9 — Testing and End-to-End Validation** |
 
 ---
 
@@ -376,7 +376,119 @@ approver identity is derived from a bearer credential.
   reports, live adapter via `httpx.MockTransport`, adapter factory, repository
   semantics in memory and SQLite, and the API's 401/403/409/503 paths including
   approve → execute → duplicate prevention and the modification round-trip).
-  **50 passed.** Full suite: **315 passed, 6 skipped**.
+  **50 passed.** Full suite at Step 6 completion: **315 passed, 6 skipped**
+  (now 352 after Step 7).
+
+### Step 7 — SAP Integration ✅
+
+Step 7 adds the enterprise-system boundary. The Step 2 read connector stays
+**read-only**; writes live in a separate module with a separate permission and
+mandatory human-approval evidence. No live SAP tenant is connected —
+`SAP_USE_MOCK=true` remains the default and every record is labelled simulated.
+
+| Module | Purpose |
+| --- | --- |
+| `app/integrations/sap_profiles.py` | Prepared profiles for S/4HANA, Business Accelerator Hub, BTP and Integration Suite, with relative read/write paths |
+| `app/integrations/sap_auth.py` | OAuth2 client-credentials provider, cached tokens, separate read/write scopes, `SAPHttpClient`, header redaction |
+| `app/integrations/sap_write.py` | Validated write requests, mandatory `SAPApprovalEvidence`, simulated + live adapters, idempotency keys, write-permission factory |
+| `app/integrations/sap.py` | Added material master reads and profile-aware live read paths with optional OAuth |
+| `app/integrations/base.py` | `Retry-After` support and `status_code` on `IntegrationRequestError` |
+| `backend/docs/sap-integration.md` | Profiles, authentication, permissions, write contract, failure handling, limitations |
+| `backend/tests/test_sap_integration.py` | 37 tests |
+
+- **Four prepared profiles.** `SAP_API_FAMILY` selects `s4hana` (default),
+  `business_accelerator_hub`, `btp` or `integration_suite`. Each declares every
+  read capability (shipments, purchase orders, suppliers, inventory, materials)
+  and every write capability. The paths are prepared gateway defaults that must be
+  confirmed against the tenant; no entitlement is claimed.
+- **Environment-based authentication.** When `SAP_AUTH_URL` is set the connector
+  requests an OAuth2 client-credentials token and caches it until shortly before
+  expiry; without it the Step 2 gateway `x-api-key` convention is used. The read
+  path requests `SAP_READ_SCOPE`, the write path `SAP_WRITE_SCOPE`, so a read
+  token can never write. Tokens and secrets are never logged, and a token-endpoint
+  rejection reports only the status code.
+- **Read interface.** Shipment, purchase-order, supplier, inventory and material
+  reads via `list_*` / `get_*`. `SimulatedSAPConnector` returns five suppliers, ten
+  shipments, five materials, seven inventory rows and four purchase orders. The
+  connector still exposes no write methods (regression-tested).
+- **Authorized writes.** Three validated request types — shipment plan update,
+  inventory transfer (`units > 0`, source ≠ target) and operational change. Every
+  method requires keyword-only `SAPApprovalEvidence`, which
+  `approval_evidence_from_decision` builds only from an approved decision and
+  refuses reject / request-modifications. Evidence carries approver identity, the
+  workflow thread, the reviewed `proposal_version` and the decision timestamp.
+- **Idempotency and results.** Keys are
+  `sap:{thread}:{version}:{type}:{request_id}`, sent as `Idempotency-Key` and in
+  the body; the mock reference is derived deterministically. Results are
+  `accepted` / `simulated` / `rejected` (400/409/422) / `failed` with provenance.
+- **Separate read and write permissions.** `SAP_WRITE_ENABLED=false` by default;
+  read credentials never imply write access; the factory fails closed.
+- **Rate limits and failures.** Shared transport retries 429/5xx, honours a
+  numeric `Retry-After` (clamped to 30s), and raises status-aware request errors.
+- **Tests.** 37 new tests: profiles, token caching/shape/redaction, material
+  reads, profile-aware live paths, request validation, approval evidence,
+  keyword-only approval, deterministic mock writes, disabled-by-default writes,
+  read≠write, live payload/header/idempotency assertions, rejection/failure
+  classification, `Retry-After`, and approved-vs-rejected end-to-end.
+  **37 passed.** Full suite: **352 passed, 6 skipped**.
+
+### Step 8 — Agent Activity and Decision Dashboard ✅
+
+Step 8 adds an enterprise control-tower UI over the state Steps 4–7 already
+produced. The dashboard is a **read-only projection**: it recomputes no verdict,
+contains no sample agent activity and adds no write endpoint. Every page is
+wired to a real FastAPI endpoint and renders explicit loading, error and empty
+states.
+
+| Module | Purpose |
+| --- | --- |
+| `app/models/workflow_runs.py` | `WorkflowRunRow` (`workflow_runs`): queryable run summary + full JSON-safe state |
+| `app/services/workflow_history.py` | `record_workflow_run`, `list_workflow_runs`, `get_workflow_run`, `list_disruptions`, `run_status_counts`, `json_safe`, `ensure_workflow_run_schema` |
+| `app/services/dashboard_service.py` | `platform_overview` (KPI counts + latest runs + declared data sources) and `list_shipments` |
+| `app/api/dashboard.py` | Read-only `/api/dashboard/*` router |
+| `frontend/src/pages/*.jsx` | Eight pages: Overview, Disruption Monitoring, Agent Activity, Scenario Comparison, Approval Center, Shipment Management, Inventory Management, Audit History |
+| `frontend/src/components/AgentWorkflowGraph.jsx` | React Flow (`@xyflow/react`) graph built from recorded executions |
+| `backend/docs/dashboard.md` | Endpoint/page map, schema, provenance and verification notes |
+
+- **Run registry.** `POST /api/orchestration/workflows` records every run —
+  including failed runs — and an authenticated decision refreshes the same row
+  (one row per thread). Recording is best-effort: it is logged and rolled back
+  on failure, so history can never lose a completed workflow or fail a decision.
+  The LangGraph `__interrupt__` object and private keys are stripped by
+  `json_safe()`.
+- **Dashboard API.** `/dashboard/overview`, `/runs`, `/runs/{thread_id}`,
+  `/disruptions`, `/shipments` and `/inventory`; database or SAP configuration
+  failures map to `503`, an unknown thread to `404`, and an empty history to an
+  empty list. Shipments are the seeded demo rows joined with suppliers;
+  inventory is the SAP connector with its real `is_mock`/`source` provenance.
+- **Agent Activity (highest priority).** Workflow id, active disruption,
+  supervisor decision trail, execution progress, the five agent cards with
+  status/current task/tools, structured results, tool invocations, handoffs,
+  replanning rounds, errors/retries, a React Flow graph, a timeline and a
+  decision log — all from the recorded run, never fabricated.
+- **Scenario Comparison.** Per-scenario route, delivery days, cost, risk,
+  inventory impact, feasibility, compliance/budget validation and the
+  deterministic recommendation, plus screening and replanning history.
+- **Approval Center (rewritten).** Token form (fail-closed `503` message),
+  pending queue, proposed action and reasons, cost/budget delta, transit and
+  inventory impact, per-agent validations from the recorded executions, audit
+  verdict, decision history, approve/request-modifications/reject controls, and
+  the execution report. The approval API and behaviour are unchanged.
+- **Other pages.** Overview KPIs/charts/latest runs; disruption detail with the
+  assessment and supervisor decision; shipment table with filters; inventory
+  positions with a `[SIMULATED]` banner; audit history driven by the run list.
+- **Design.** Rewritten dark-navy control-tower theme with a numbered sidebar,
+  sticky topbar, KPI tiles, panels, tables, accessible status badges, and
+  responsive breakpoints at 1180/1024/760/480 px (sidebar becomes a drawer).
+- **Tests.** `tests/test_dashboard.py` — 12 tests. Full suite: **364 passed,
+  6 skipped**. `npm run build` passes (57 modules); `npm run lint` reports
+  0 errors (2 pre-existing hooks warnings).
+- **Verification caveat.** Two live verification runs failed on Gemini
+  (`503 UNAVAILABLE`, then `429` free-tier quota), so populated *successful*
+  Scenario Comparison and Approval Center views were not exercised in a browser
+  that day; the failure-path UI and every other page were browser-verified. The
+  two `EV-UI-VERIFY-*` failed runs are genuine recordings and remain in the
+  shared database.
 
 ---
 
@@ -396,8 +508,8 @@ None.
 | 4 | LangGraph supervisor and orchestration | ✅ Complete (verified) |
 | 5 | Multi-agent collaboration + autonomous replanning | ✅ Complete (verified) |
 | 6 | Human-in-the-loop and authorized execution | ✅ Complete (verified) |
-| 7 | SAP integration | Not started |
-| 8 | Agent Activity and Decision dashboard | Not started |
+| 7 | SAP integration | ✅ Complete (verified; simulated adapters, no live tenant) |
+| 8 | Agent Activity and Decision dashboard | ✅ Complete (verified; see §11 item 17) |
 | 9 | Testing and end-to-end validation | Not started |
 | 10 | Deployment and hackathon demonstration | Not started |
 
@@ -618,6 +730,69 @@ None.
 | `backend/app/models/__init__.py`, `backend/app/schemas/__init__.py` | Export/register the new modules |
 | `backend/.env.example`, `.env.example` (root) | Documented `APPROVER_CREDENTIALS` and `EXECUTION_*` (names only) |
 
+### Created — backend (Step 7 — SAP integration)
+
+| File | Purpose |
+| --- | --- |
+| `backend/app/integrations/sap_profiles.py` | Prepared profiles (S/4HANA, Business Accelerator Hub, BTP, Integration Suite), capability paths and `resolve_sap_profile` |
+| `backend/app/integrations/sap_auth.py` | `SAPOAuthTokenProvider`, `SAPHttpClient`, `sap_token_provider`, `redact_headers` |
+| `backend/app/integrations/sap_write.py` | Approval evidence, validated write requests, simulated + live write connectors, idempotency, `get_sap_write_connector` |
+| `backend/docs/sap-integration.md` | Step 7 reference and limitations |
+| `backend/tests/test_sap_integration.py` | 37 Step 7 tests |
+
+### Modified — backend (Step 7)
+
+| File | Change |
+| --- | --- |
+| `backend/app/integrations/sap.py` | Added `SAPMaterial`, sample material master, `list_materials`/`get_material`; live adapter now uses the selected profile's read paths and optional OAuth |
+| `backend/app/integrations/base.py` | `IntegrationRequestError.status_code`; honours numeric `Retry-After` (max 30s) on retryable responses |
+| `backend/app/integrations/__init__.py` | Docstring indexes the Step 7 modules |
+| `backend/app/config/settings.py` | Added `SAP_API_FAMILY`, `SAP_AUTH_URL`, `SAP_READ_SCOPE`, `SAP_WRITE_SCOPE`, `SAP_WRITE_ENABLED` and `sap_oauth_configured` |
+| `backend/.env.example`, `.env.example` (root) | Documented the new SAP variables (names and safe defaults only) |
+
+### Created — backend (Step 8 — dashboard)
+
+| File | Purpose |
+| --- | --- |
+| `backend/app/models/workflow_runs.py` | `WorkflowRunRow` — one row per thread with summary columns and full `state_json` |
+| `backend/app/services/workflow_history.py` | Run recording, listing, detail, disruption view, status counts, `json_safe`, schema ensure |
+| `backend/app/services/dashboard_service.py` | Overview KPIs/latest runs/data sources and shipment listing |
+| `backend/app/api/dashboard.py` | Read-only dashboard router (six GET endpoints) |
+| `backend/docs/dashboard.md` | Step 8 reference and verification limitations |
+| `backend/tests/test_dashboard.py` | 12 Step 8 tests |
+
+### Modified — backend (Step 8)
+
+| File | Change |
+| --- | --- |
+| `backend/app/api/router.py` | Registered the dashboard router |
+| `backend/app/api/orchestration.py` | Records the workflow run after every invocation (including failures) |
+| `backend/app/api/approvals.py` | Refreshes the recorded run after an authenticated decision |
+| `backend/app/main.py` | Ensures the `workflow_runs` schema exists at startup alongside the approval schema |
+
+### Created / modified — frontend (Step 8)
+
+| File | Change |
+| --- | --- |
+| `frontend/src/pages/Overview.jsx` | Rewritten: KPI tiles, status chart, pipeline, latest runs, data-source notes |
+| `frontend/src/pages/AgentActivity.jsx` | Rewritten: run selector, supervisor trail, five agent cards, React Flow graph, timeline, tools, handoffs, replanning, errors; accepts `onOpenThread` for cross-page navigation |
+| `frontend/src/pages/ScenarioComparison.jsx` | Rewritten: scenario table, comparison detail, screening/replanning history |
+| `frontend/src/pages/ApprovalCenter.jsx` | Rewritten: token gate, queue, impact tiles, agent validations, controls, history, execution report |
+| `frontend/src/pages/DisruptionMonitoring.jsx` | Rewritten: disruption list and assessment/decision detail |
+| `frontend/src/pages/ShipmentManagement.jsx` | Rewritten: shipment table with search/status filters |
+| `frontend/src/pages/InventoryManagement.jsx` | Rewritten: inventory positions, materials, `[SIMULATED]` provenance banner |
+| `frontend/src/pages/AuditHistory.jsx` | Rewritten: recorded run history with decision and approval detail |
+| `frontend/src/components/AgentWorkflowGraph.jsx` | React Flow graph from recorded executions |
+| `frontend/src/components/BarChart.jsx`, `KpiCard.jsx`, `PageHeader.jsx`, `RunSelector.jsx`, `StatePanel.jsx` | Shared dashboard components |
+| `frontend/src/hooks/useAsyncData.js` | Loading/error/reload hook for read-only endpoints |
+| `frontend/src/constants/domain.js` | Agent ids/labels, status tones, navigation metadata |
+| `frontend/src/utils/format.js` | Money/percent/date/title formatting |
+| `frontend/src/layouts/AppLayout.jsx` | Numbered sidebar (01–08), sticky topbar, mobile drawer |
+| `frontend/src/App.jsx` | Eight-page shell with shared run selection and cross-page navigation |
+| `frontend/src/services/api.js` | Dashboard reads and workflow endpoint |
+| `frontend/src/index.css` | Full control-tower theme rewrite (~1,300 lines) and responsive breakpoints |
+| `frontend/package.json` | Added `@xyflow/react` 13.0.2 |
+
 ### Created / modified — frontend (Step 6)
 
 | File | Change |
@@ -693,7 +868,7 @@ Verified installed versions:
 | psycopg-pool | (installed with the above) |
 
 Frontend: React 19.3.1, react-dom 19.3.1, Vite 8.3.8, `@vitejs/plugin-react` 6.1.2,
-oxlint 1.90.0 (24 packages installed, 0 vulnerabilities).
+`@xyflow/react` 13.0.2 (Step 8), oxlint 1.90.0.
 
 Step 5 added **no new packages** — it reuses LangGraph, Pydantic and the existing
 Step 1/2 layers.
@@ -702,6 +877,14 @@ Step 6 added **no new packages** — approval persistence uses the existing
 SQLAlchemy/PostgreSQL layer, authentication uses the standard-library `secrets`
 module, execution reuses `httpx` through the Step 2 `HttpConnector`, and the API
 reuses FastAPI/Starlette security primitives.
+
+Step 7 added **no new packages** — the OAuth token client uses the installed
+`httpx`, and profiles, validation and redaction use Pydantic and the standard
+library.
+
+Step 8 added **no backend packages**. The frontend added **`@xyflow/react`
+13.0.2** for the agent workflow graph; everything else reuses React, the existing
+Vite setup and plain CSS.
 
 ---
 
@@ -733,6 +916,13 @@ endpoint fails closed with `503` until an operator configures it; execution is
 simulated by default (`EXECUTION_USE_MOCK=true`) and the live executor raises
 `IntegrationNotConfiguredError` (mapped to `503`) if mock mode is off without a
 base URL.
+
+Added in Step 7: `SAP_API_FAMILY` (default `s4hana`), `SAP_AUTH_URL`,
+`SAP_READ_SCOPE` (default `sap.read`), `SAP_WRITE_SCOPE` (default `sap.write`) and
+`SAP_WRITE_ENABLED` (default `false`). `SAP_BASE_URL`, `SAP_CLIENT_ID`,
+`SAP_CLIENT_SECRET` and `SAP_USE_MOCK` remain from Step 2. `SAP_WRITE_ENABLED`
+being false means writes fail closed even when read access is configured; no SAP
+tenant is contacted while `SAP_USE_MOCK=true`.
 
 Real credentials **are** now configured in `backend/.env` (git-ignored and not
 committed): an Aiven PostgreSQL `DATABASE_URL` (`sslmode=require`) and a live
@@ -772,7 +962,9 @@ npm run dev
 
 | Test | Command | Result |
 | --- | --- | --- |
-| Backend unit tests (full suite) | `..\.venv\Scripts\python.exe -m pytest` (in `backend/`) | ✅ **321 tests collected; 315 passed, 6 skipped** (the 5 opt-in `RUN_LIVE_GEMINI=1` agent tests + 1 live supervisor test skip by default; repository tests skip when PostgreSQL is down) |
+| Backend unit tests (full suite) | `..\.venv\Scripts\python.exe -m pytest` (in `backend/`) | ✅ **370 tests collected; 364 passed, 6 skipped in 9.74s** (the 5 opt-in `RUN_LIVE_GEMINI=1` agent tests + 1 live supervisor test skip by default; repository tests skip when PostgreSQL is down) |
+| Step 8 dashboard tests | `pytest tests/test_dashboard.py` | ✅ **12 passed** (summary derivation, one-row upsert, ordering/status filter, disruption detail, JSON-safe interrupt stripping, overview counts, run/detail endpoints incl. 404, shipment and inventory payloads, run recorded on workflow start, dashboard routes mounted) |
+| Step 7 SAP integration tests | `pytest tests/test_sap_integration.py` | ✅ **37 passed** (four API profiles and env selection, undeclared-capability refusal, OAuth2 client-credentials form + token caching, secret never echoed in an error body, no token/secret in logs, header redaction, bearer replaces `x-api-key`, material master reads, profile-aware read paths, 404 → `None`, read connector has no write methods, request validation, approval evidence from approve/reject, keyword-only evidence, deterministic simulated writes for all three write types, literal idempotency key, fail-closed write permission, live writer requires credentials, read/write scope and permission separation, rejected vs failed classification, `Retry-After` honoured, approved-vs-rejected end to end) |
 | Step 6 approval + execution tests | `pytest tests/test_approvals.py` | ✅ **50 passed** (proposal versioning, credential parsing, authentication and role hierarchy, bearer parsing, legacy and Step 6 payloads, approve/reject identity + timestamp + history, bounded modification loop, execution plan/keys/labelling/replay/refusal, partial + failed reports, live adapter via `httpx.MockTransport`, repository semantics in memory and SQLite, API 401/403/409/503 including approve → execute → duplicate prevention and the modification round-trip) |
 | Step 5 collaboration tests | `pytest tests/test_collaboration.py` | ✅ **14 passed** (tasks ↔ decisions, tool-call recording, deterministic screening, one bounded revision preserving history, no-compliant recovery, unavailable tools, retries, JSON round-trip) |
 | **Live Gemini through the supervisor (Step 5)** | `$env:RUN_LIVE_GEMINI="1"; pytest tests/test_orchestration.py -k live` | ✅ **1 passed** — real Gemini reasoning through the new tool-recording wrappers |
@@ -793,7 +985,8 @@ npm run dev
 | JSON logging mode | `configure_logging('INFO', True)` smoke test | ✅ Emitted valid JSON |
 | Backend service index | `GET http://127.0.0.1:8000/` | ✅ `200` with docs/health links |
 | Liveness probe | `GET http://127.0.0.1:8000/api/health/live` | ✅ `{"status":"ok"}` |
-| Frontend production build | `npm run build` | ✅ built OK, including the Step 6 Approval Center |
+| Frontend production build | `npm run build` | ✅ **57 modules transformed; 555.19 kB JS, 40.68 kB CSS; built in 330 ms** (includes the eight dashboard pages and the React Flow graph) |
+| Frontend lint | `npm run lint` | ✅ **0 errors, 2 pre-existing warnings** (`useAsyncData` non-literal deps, `useHealthCheck` setState-in-effect) |
 | Frontend serves | `GET http://localhost:5173/` | ✅ `200`, title `X FACTOR — Supply Chain Resilience` |
 | **Frontend → backend proxy** | `GET http://localhost:5173/api/health` | ✅ `200` proxied backend JSON |
 
@@ -815,10 +1008,15 @@ npm run dev
    `gemini-3.8-flash` / `gemini-flash-latest` returned transient `503 high demand`
    and are not used as defaults. If the model is retired again, update
    `GEMINI_MODEL` in `backend/.env`.
-3. **SAP credentials not configured** — `SAP_USE_MOCK=true` by default. The Step 2
-   `SAPConnector` is **read-only** and returns clearly labelled simulated data
-   while mock mode is on; real SAP read/write integration is Step 7 (writes are
-   additionally gated by Step 6 approval).
+3. **SAP credentials not configured** — `SAP_USE_MOCK=true` by default. Step 7
+   delivered the modular read connector and the separate, permission-gated write
+   connector, but both are validated against the labelled simulated adapters
+   only: no SAP sandbox or tenant has been contacted. The Step 2 `SAPConnector`
+   remains **read-only**; writes live in `sap_write.py` and require approval
+   evidence, `SAP_WRITE_ENABLED=true` and configured credentials. Supplying
+   `SAP_BASE_URL`, `SAP_CLIENT_ID`/`SAP_CLIENT_SECRET` (or `SAP_AUTH_URL` for
+   OAuth2) and `SAP_USE_MOCK=false` switches a profile to live with no code
+   change.
 4. **No external-data API credentials are configured.** Every Step 2 external
    connector (weather, news, maritime, congestion, tariff, supplier, carrier,
    tracking, mapping) therefore returns **simulated** data, marked `is_mock=True`
@@ -841,12 +1039,12 @@ npm run dev
    Step 1 note ("LangGraph deliberately not installed yet") is superseded: it was
    deferred until the step that needs it, to honour "do not add unnecessary
    packages".
-9. **Steps 7–10 not started** — intentional, per the roadmap rule not to proceed
-   automatically. Step 6 is complete: the approval gate is authenticated and
-   version-bound, decisions are persisted with approver identity and timestamp,
-   modifications are bounded, and execution is idempotent and simulated by
-   default. Steps 0–5 are unchanged and re-verified by their own tests (315 passed
-   across the full suite).
+9. **Steps 9–10 not started** — intentional, per the roadmap rule not to proceed
+   automatically. Step 8 is complete: the `workflow_runs` registry records every
+   supervisor run (failures included), a read-only dashboard API serves it, and
+   all eight control-tower pages are wired to real endpoints with loading, error
+   and empty states. Steps 0–7 are unchanged and re-verified by their own tests
+   (364 passed across the full suite).
 10. **Postgres checkpoint tables are created on first use.** `postgres_checkpointer()`
     calls `saver.setup()` (idempotent) when the workflow is built with the default
     `LANGGRAPH_CHECKPOINT_BACKEND=postgres`; a database must be reachable for that
@@ -860,44 +1058,81 @@ npm run dev
     `EXECUTION_USE_MOCK=true` routes every action to `SimulatedExecutionAdapter`,
     which returns `SIM-…` references and `[SIMULATED]` messages. The live
     `HttpExecutionAdapter` is implemented and unit-tested via `httpx.MockTransport`
-    but has never been pointed at a real endpoint; Step 7's SAP writes are its
-    intended target.
-13. **Approval Center has not yet been exercised in a browser.** The production
-    build passes and the API paths are covered by tests, but a manual walkthrough
-    (token entry → pending queue → approve → execution report) is still pending
-    and belongs with the Step 8 dashboard work.
+    but has never been pointed at a real endpoint. The Step 7 SAP write connector
+    exists but is not yet wired into this execution path (see §11 item 15).
+13. **The Approval Center's populated path has not been exercised in a browser.**
+    The Step 8 browser walkthrough covered the missing-token, invalid-token
+    (`503`) and empty-queue states. Approving a real proposal requires a paused
+    successful run and `APPROVER_CREDENTIALS`; the live Gemini quota blocked the
+    former on 2026-11-22 (see item 17). The API paths remain covered by the
+    Step 6 tests and the UI state machine is the same code that renders the
+    fail-closed states.
+14. **SAP write paths are prepared defaults, not tenant-verified.** The paths in
+    `app/integrations/sap_profiles.py` (e.g.
+    `/sap/opu/odata/sap/API_SHIPMENT_SRV/…`) are the conventional shapes for each
+    API family, but no SAP system has validated them. The real OData service
+    names, transport (v2/v4/REST) and write entitlements must be confirmed against
+    an actual sandbox before `SAP_USE_MOCK=false` is used for writes.
+15. **SAP writes are not yet invoked from the approval/execution path.** The
+    write connector and its approval bridge (`approval_evidence_from_decision`)
+    are implemented and tested, but Step 6's `ProposalSnapshot` carries no
+    shipment or plant identifiers, so linking an approved proposal to a concrete
+    SAP write request belongs to a later step. No operational identifier was
+    invented just to force the connection.
+16. **SAP OAuth scopes are declared, not granted.** `SAP_READ_SCOPE` /
+    `SAP_WRITE_SCOPE` are sent as requested scopes (`sap.read`, `sap.write` by
+    default), but whether a tenant's client credentials are entitled to them is
+    unknown until a live token exchange is attempted. A scope rejection surfaces
+    as an `IntegrationNotConfiguredError`/`IntegrationRequestError`, never as
+    silent fallback to mock data.
+17. **Live Gemini quota blocked a successful Step 8 browser verification.**
+    On 2026-11-22 the verification workflow returned `GeminiRequestError:
+    HTTP 503 UNAVAILABLE`, and an immediate retry returned `429` —
+    `generate_content_free_tier_requests, limit: 5`. Both runs were recorded as
+    genuine failures (`EV-UI-VERIFY-001`, `EV-UI-VERIFY-002`). Consequently the
+    **populated successful** Scenario Comparison and Approval Center views have
+    not been seen in a browser; everything else (Overview, shipments, inventory,
+    disruptions, Agent Activity with a failed run, audit list, fail-closed
+    approval states) was browser-verified. The backend request/response paths are
+    covered by tests. No success was simulated to mask the gap.
+18. **Two verification runs remain in the shared Aiven database.** They are real
+    failed runs (`EV-UI-VERIFY-*`) and the dashboard displays them honestly. They
+    were not deleted because removing rows from the shared database is a
+    destructive action that was not authorised. They can be removed later with
+    an explicit data-cleanup decision.
+19. **Desktop-width visual checking is limited.** The in-app browser viewport was
+    roughly 498×570 and screenshots occasionally reported
+    `NATIVE_BROWSER_VIEWPORT_UNAVAILABLE`; verification therefore relied on
+    accessibility snapshots plus a few successful screenshots. The CSS defines
+    breakpoints at 1180/1024/760/480 px, but a full desktop-width visual pass
+    belongs to Step 9.
 
 ---
 
 ## 12. Exact next action
 
-**Start Step 7 — SAP Integration.**
+**Start Step 9 — Testing and End-to-End Validation.**
 
-Step 6 is complete and verified (see §3 and §10). The approval gate now
-authenticates a bearer credential, binds the decision to a proposal version,
-persists the queue and history, bounds modifications and executes only an
-approved proposal through an idempotent execution service. Step 7 builds on that
-rather than replacing it:
+Step 8 is complete and verified (see §3, §10 and `backend/docs/dashboard.md`):
+the `workflow_runs` registry records every run, a read-only `/api/dashboard/*`
+API serves the recorded state, and eight control-tower pages render it with
+loading, error and empty states. No new decision logic was introduced. Step 9
+should now verify the whole product end to end rather than add features:
 
-1. **Modular SAP connector** — extend the Step 2 read-only `SAPConnector` into a
-   modular interface with environment-based authentication.
-2. **Connector preparation** — S/4HANA, Business Accelerator Hub APIs, BTP and
-   Integration Suite, each behind the same factory pattern used by the Step 2
-   connectors.
-3. **Reads** — shipment information, purchase orders, supplier records, inventory
-   levels and material information.
-4. **Writes where supported** — shipment plan updates, inventory transfer
-   requests and approved operational changes, reached through the Step 6
-   execution path so no write bypasses approval.
-5. **Request validation**, rate-limit and API-failure handling, and
-   request/response logging that never exposes secrets.
-6. **Separate read and write permissions**, with approval required before any
-   sensitive write.
-7. **Labelled mock SAP adapter** when sandbox credentials are unavailable — the
-   default remains `SAP_USE_MOCK=true`.
+1. **Golden path** — Mumbai → Rotterdam pharmaceutical maritime disruption
+   through ingest → sensing → risk → supervisor → scenario planning → rerouting
+   → inventory → compliance → approval → authorised simulated execution.
+2. **Failure tests** — Gemini unavailable/quota (already observed: `503`/`429`),
+   external API timeout, invalid agent output, missing route, no feasible
+   recovery — each ending in an honest status, never a fabricated success.
+3. **Browser completion** — the populated successful Scenario Comparison and
+   Approval Center views that Gemini quota blocked on 2026-11-22, plus a
+   desktop-width visual pass.
+4. **Data cleanup decision** — whether to remove the `EV-UI-VERIFY-*` failed
+   runs from the shared database (destructive; needs explicit approval).
 
-The Step 6 `HttpExecutionAdapter` is the intended write transport; Step 7 supplies
-the SAP-specific endpoints, payload validation and permission split behind it.
+Deferred to a later step (recorded in §11): invoking SAP writes from the
+approval/execution path once proposals carry shipment and plant identifiers.
 
 **Credentials available (recorded 2026-11-22) — do not re-ask:**
 
@@ -912,9 +1147,12 @@ the SAP-specific endpoints, payload validation and permission split behind it.
 4. **External-data API credentials:** none. This is expected — every Step 2
    connector falls back to clearly labelled simulated data, which is the
    deliberate design. No action is required from the developer.
-5. **SAP credentials:** none. `SAP_USE_MOCK=true` stays in effect, so Step 7 will
-   be validated against the labelled mock adapter; no action is required unless
-   live sandbox credentials are supplied.
+5. **SAP credentials:** none. `SAP_USE_MOCK=true` and `SAP_WRITE_ENABLED=false`
+   stay in effect, so both SAP reads and writes use the labelled simulated
+   adapters; no action is required unless live sandbox credentials are supplied
+   (then set `SAP_BASE_URL`, `SAP_CLIENT_ID`/`SAP_CLIENT_SECRET`, optionally
+   `SAP_AUTH_URL`, and `SAP_USE_MOCK=false`, and confirm the paths in
+   `sap_profiles.py`).
 
 ---
 
@@ -1081,3 +1319,61 @@ the SAP-specific endpoints, payload validation and permission split behind it.
     the live adapter is the same `httpx` transport as the Step 2 connectors and
     raises `IntegrationNotConfiguredError` (mapped to `503`) when it is enabled
     without a base URL.
+37. **SAP API families are configuration, not subclasses (Step 7).** One frozen
+    `SAPApiProfile` record holds each family's transport, authentication style,
+    read paths and write paths; `SAP_API_FAMILY` selects it at runtime. Adding or
+    correcting a family is a data change in `sap_profiles.py`, not a new connector
+    class, and an undeclared capability fails loudly instead of guessing a path.
+38. **The read connector stays read-only (Step 7).** `SAPConnector` still defines
+    no write method — the Step 2 regression test that forbids them passes
+    unchanged. Writes live in `sap_write.py` behind their own protocol, so a read
+    credential cannot be used to mutate anything even by mistake.
+39. **Read and write are separately permissioned and configured (Step 7).**
+    Reads use `SAP_READ_SCOPE`/`SAP_CLIENT_SECRET`; writes need
+    `SAP_WRITE_ENABLED=true`, a profile that declares the capability, the
+    `SAP_WRITE_SCOPE` token and approval evidence. `SAP_WRITE_ENABLED` defaults to
+    false, so the write surface is fail-closed and must be deliberately opened.
+40. **Approval evidence is mandatory and typed (Step 7).** Every write takes a
+    keyword-only `SAPApprovalEvidence` whose validator accepts only
+    `ApprovalAction.APPROVE`; `approval_evidence_from_decision` refuses a
+    rejected or modification decision. There is no code path that reaches an SAP
+    write without a recorded human approval, its role, thread and proposal
+    version.
+41. **Writes are idempotent per proposal version (Step 7).** The key
+    `sap:{thread_id}:{proposal_version}:{request_type}:{request_id}` is sent as
+    `Idempotency-Key` and embedded in the payload, so a retried submission cannot
+    create a duplicate transfer or plan update. Results are typed
+    (`accepted`/`simulated`/`rejected`/`failed`); a 400/409/422 is `rejected`, a
+    timeout/5xx is `failed`, and neither is reported as applied.
+42. **No live SAP is claimed (Step 7).** `SAP_USE_MOCK=true` is the default; every
+    simulated read record and write result carries `is_mock=True` and a
+    `[SIMULATED]` message/provenance. The live paths are plausible defaults, but
+    the docs state plainly that they, the scopes and the write entitlements are
+    unverified because no tenant has been contacted.
+43. **`workflow_runs` is a projection, not a second source of truth (Step 8).**
+    One row per thread stores queryable summaries plus the full JSON-safe state so
+    the dashboard never has to replay checkpoints. The LangGraph checkpoint remains
+    authoritative for resuming; if the projection and checkpoint ever diverge, the
+    checkpoint wins and the row is rewritten on the next invocation or decision.
+44. **History recording is best-effort and never load-bearing (Step 8).** A
+    dashboard write failure is logged, rolled back and swallowed; it cannot lose a
+    completed workflow result or fail an approval decision. This mirrors the
+    platform rule that observability must not break the operation it observes.
+45. **The dashboard is strictly read-only (Step 8).** `/api/dashboard/*` exposes
+    GET endpoints only and recomputes no verdict, score or recommendation. It
+    renders the stored `SupervisorDecision`, `AgentExecution`, `ToolInvocation`,
+    screening, replanning and approval records verbatim, so the UI can never
+    disagree with the deterministic engines.
+46. **The agent graph is drawn from recorded executions (Step 8).** The React Flow
+    view is generated from the run's actual `agent_executions`, not from a static
+    diagram with animated "active" agents. An agent that was skipped or never
+    delegated is drawn in that state, and a failed node shows its recorded error.
+47. **Dashboard data provenance is carried through, not flattened (Step 8).**
+    Shipments state that they are seeded PostgreSQL demo rows; inventory returns
+    the SAP connector's `is_mock`, `source` and `endpoint` and the UI shows a
+    `[SIMULATED]` banner when mock mode is on. The dashboard adds no independent
+    claim that data is live.
+48. **Empty and failed are first-class UI states (Step 8).** The API returns empty
+    lists rather than placeholder rows, and every page renders loading, error and
+    empty states explicitly. A failed run is displayed with its recorded error and
+    status — never replaced by a sample success for demonstration purposes.

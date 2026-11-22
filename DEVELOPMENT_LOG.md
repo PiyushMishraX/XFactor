@@ -784,4 +784,198 @@ payload still works, and every Step 0–5 test still passes.
 
 ---
 
+## 2026-11-22 — Session 7: Step 7 — SAP Integration
+
+### Starting point (session-recovery protocol)
+
+Resumed from `PROJECT_PROGRESS.md` §12 and `TASK_CHECKLIST.md` Step 7, with
+Step 6 verified complete (suite 315 passed / 6 skipped). The Step 2
+`app/integrations/sap.py` connector, the shared `base.py` transport, the Step 6
+approval schemas and the `.env` templates were read first and **extended, not
+replaced**: the Step 2 read-only contract (and its regression test that forbids
+write methods) still holds.
+
+### Work completed
+
+1. **`app/integrations/sap_profiles.py`** — frozen `SAPApiProfile` records for
+   `s4hana`, `business_accelerator_hub`, `btp` and `integration_suite`, each with
+   transport, authentication style, declared read/write capabilities and prepared
+   paths; `resolve_sap_profile(settings)` selects one from `SAP_API_FAMILY`, and
+   an undeclared capability raises `IntegrationNotConfiguredError`.
+2. **`app/integrations/sap_auth.py`** — `SAPOAuthTokenProvider` (OAuth2
+   client-credentials, cached until `expires_in - 30`, never echoing a token
+   error body), `SAPHttpClient` (adds `Authorization: Bearer`, drops `x-api-key`),
+   `redact_headers` and `sap_token_provider(settings, scope=…)`.
+3. **`app/integrations/base.py`** — `IntegrationRequestError.status_code`,
+   numeric `Retry-After` parsing (clamped to 30 s) and retry sleeps that honour
+   it.
+4. **`app/integrations/sap.py`** — the read connector gained material information
+   (`SAPMaterial`, `list_materials`, `get_material`, a labelled 5-row sample),
+   profile-aware paths and status-code-based 404 handling; it still exposes no
+   write method.
+5. **`app/integrations/sap_write.py`** — `SAPWriteType`, three validated request
+   models, mandatory `SAPApprovalEvidence` (approve-only), the
+   `approval_evidence_from_decision` bridge, `sap_idempotency_key`,
+   `SimulatedSAPWriteConnector` and `HttpSAPWriteConnector`, with a
+   fail-closed `get_sap_write_connector` factory (`SAP_WRITE_ENABLED`,
+   capability, credentials, mock).
+6. **`app/config/settings.py`** — `SAP_API_FAMILY`, `SAP_AUTH_URL`,
+   `SAP_READ_SCOPE`, `SAP_WRITE_SCOPE`, `SAP_WRITE_ENABLED` and the
+   `sap_oauth_configured` property.
+7. **`backend/docs/sap-integration.md`**, **`tests/test_sap_integration.py`**
+   (37 tests), `app/integrations/__init__.py`, both `.env.example` templates,
+   README, `TASK_CHECKLIST.md` and `PROJECT_PROGRESS.md`.
+
+### Important implementation decisions
+
+- **Profiles are data, not subclasses.** One frozen record per API family avoids
+  four near-identical connector classes and makes a path correction a one-line
+  data change.
+- **Writes are physically separate.** `sap_write.py` owns a different protocol,
+  credential scope, permission flag and approval evidence, so the read connector
+  cannot mutate anything.
+- **Approval is mandatory, typed and approve-only.** A rejected or
+  modification-requested decision cannot be turned into evidence, and there is
+  no write entry point without it.
+- **Idempotency per proposal version.**
+  `sap:{thread}:{version}:{type}:{request_id}` is sent both as `Idempotency-Key`
+  and in the payload; 400/409/422 map to `rejected`, timeouts/5xx to `failed`.
+- **Honest prepared defaults.** Paths, scopes and entitlements are documented as
+  unverified because no tenant was contacted; `SAP_USE_MOCK=true` stays the
+  default and every record/result is labelled `[SIMULATED]`.
+
+### Dependencies installed
+
+- None. Step 7 reuses `httpx`, pydantic v2 and the standard library.
+
+### Tests and results
+
+| Check | Result |
+| --- | --- |
+| `python -m pytest` (full backend suite) | ✅ **352 passed, 6 skipped** (358 collected) |
+| `pytest tests/test_sap_integration.py` | ✅ **37 passed** |
+| `pytest tests/test_integrations.py` | ✅ **62 passed** (Step 2 contract unchanged, including the read-only assertion) |
+
+### Problems encountered and their solutions
+
+1. **A multi-line edit to the `base.py` retry loop matched nothing.** *Solution:*
+   split it into three small edits (initialize `retry_after`, handle the retryable
+   branch, raise 4xx with `status_code` and choose the sleep), each verified.
+2. **An `__init__.py` edit failed on a docstring mismatch.** *Solution:* rewrote
+   the small package docstring in full.
+3. **The first live-write test built a response with an inline `__import__`
+   expression.** *Solution:* added a normal `import json` and parsed
+   `request.content` directly.
+
+### Remaining work
+
+- Step 8 (Agent Activity and Decision Dashboard) and beyond — see
+  `TASK_CHECKLIST.md`. Step 7 is complete and verified; the roadmap rule "do not
+  proceed to the next step automatically" was observed. Two documented
+  follow-ups: invoking SAP writes from the approval/execution path once proposals
+  carry shipment/plant identifiers, and the Approval Center browser walkthrough.
+
+## 2026-11-22 — Session 8: Step 8 — Agent Activity and Decision Dashboard
+
+### Starting point
+
+Session recovery found Step 7 complete and verified (352 passed, 6 skipped) and
+Step 8 not started. Backend work for Step 8 (run registry, dashboard API,
+recording hooks) had already landed in the working tree; the eight frontend
+pages and the shared control-tower shell were still Vite-era placeholder screens
+with a two-tab layout. The dashboard had to be built on recorded state only —
+no sample executions, no write endpoints.
+
+### Work completed
+
+1. **Run registry and dashboard API (backend).** Added `WorkflowRunRow`
+   (`workflow_runs`), `workflow_history` (recording, listing, detail,
+   disruptions, status counts, `json_safe`, schema ensure), `dashboard_service`
+   (overview KPIs, shipments) and the read-only `/api/dashboard/*` router.
+   `POST /api/orchestration/workflows` now records every run including failures,
+   and an authenticated decision refreshes the same row. Both writes are
+   best-effort and never fail the operation. Startup ensures the table exists.
+2. **Application shell rewrite.** `AppLayout` became a numbered 01–08 sidebar
+   with a sticky topbar, mobile drawer and footer; `App.jsx` now hosts all eight
+   pages with shared run selection and cross-page navigation.
+3. **Eight pages.** Overview (KPI tiles, status chart, pipeline, latest runs),
+   Disruption Monitoring (list + assessment/decision detail), **Agent Activity**
+   (run selector, supervisor trail, five agent cards, execution progress,
+   structured results, tool invocations, handoffs, replanning, errors, React Flow
+   graph, timeline, decision log), Scenario Comparison (routes, days, cost, risk,
+   inventory impact, feasibility, compliance, recommendation, screening and
+   replanning history), Approval Center (token gate, queue, proposed action,
+   cost/budget impact, per-agent validations, audit verdict, history, controls,
+   execution report), Shipment Management (filterable master data),
+   Inventory Management (positions, materials, `[SIMULATED]` banner) and Audit
+   History (recorded runs with decision/approval detail).
+4. **Shared frontend infrastructure.** `useAsyncData` (loading/error/reload),
+   `constants/domain.js` (agent ids/labels, tones, navigation), `utils/format.js`,
+   and the components `PageHeader`, `StatePanel`, `KpiCard`, `BarChart`,
+   `RunSelector` and `AgentWorkflowGraph` (React Flow, `@xyflow/react`).
+5. **Theme rewrite.** `index.css` replaced with a dark-navy control-tower system:
+   design tokens, panels, KPI grid, tables, chips, progress, timeline, decision
+   log, impact tiles, validation list and responsive breakpoints at
+   1180/1024/760/480 px.
+6. **Bug fixes found during verification.** `AgentActivity` used `onOpenThread`
+   without accepting it as a prop; the Shipment page claimed live master data;
+   `InventoryManagement` carried an unused helper; `ApprovalCenter` needed
+   explicit tones for not-delegated validations and cost deltas.
+
+### Design decisions
+
+- The dashboard is a **projection**, never a second source of truth; the
+  checkpoint remains authoritative for resuming.
+- History writes are **best-effort**, so observability cannot break a workflow or
+  a decision.
+- The React Flow graph is generated from **recorded executions**, so a skipped,
+  failed or never-delegated agent is drawn as such.
+- Provenance is carried into the UI: seeded shipments are labelled as demo rows
+  and simulated SAP inventory keeps its `[SIMULATED]` banner.
+- Failed and empty states are shown honestly; nothing is back-filled to look
+  successful.
+
+### Dependencies installed
+
+- Backend: none.
+- Frontend: `@xyflow/react` 13.0.2.
+
+### Tests and results
+
+| Check | Result |
+| --- | --- |
+| `python -m pytest` (full backend suite) | ✅ **364 passed, 6 skipped in 9.74s** (370 collected) |
+| `pytest tests/test_dashboard.py` | ✅ **12 passed** |
+| `npm run build` | ✅ 57 modules; 555.19 kB JS, 40.68 kB CSS; built in 330 ms |
+| `npm run lint` | ✅ 0 errors, 2 pre-existing warnings |
+| Browser walkthrough (Vite + live backend + Aiven PostgreSQL) | ✅ Overview, Shipment Management, Inventory Management, Disruption Monitoring, Agent Activity (real failed run with React Flow/timeline/tools/handoffs), Scenario Comparison empty plan, Audit History, Approval Center fail-closed states |
+
+### Problems encountered and their solutions
+
+1. **`AgentActivity` crashed when opening a scenario from the detail panel** —
+   the page called `onOpenThread` but did not accept it as a prop. *Solution:*
+   added it to the props destructure.
+2. **Live verification workflow failed on Gemini twice.** The first run returned
+   `503 UNAVAILABLE`; the retry returned `429` (`free_tier_requests, limit: 5`).
+   *No workaround was invented:* both runs were recorded as genuine failures
+   (`EV-UI-VERIFY-001/002`) and the dashboard shows them as failed. Populated
+   successful Scenario Comparison and Approval Center views therefore remain
+   browser-unverified; the API paths stay covered by tests.
+3. **Browser screenshots intermittently reported
+   `NATIVE_BROWSER_VIEWPORT_UNAVAILABLE`** in the ~498×570 in-app viewport.
+   *Solution:* relied on accessibility snapshots and retried screenshots; a
+   desktop-width visual pass is deferred to Step 9.
+4. **The two verification runs remain in the shared database.** Deleting rows
+   from a shared Aiven instance is destructive and was not authorised, so they
+   were left in place and documented instead.
+
+### Remaining work
+
+- **Step 9 (Testing and End-to-End Validation)** is next and was deliberately
+  not started. It should exercise the Mumbai → Rotterdam golden path, the
+  documented failure modes, the two browser views Gemini quota blocked, and
+  decide whether the `EV-UI-VERIFY-*` rows should be removed.
+
+---
+
 _All progress files updated at the end of this milestone._

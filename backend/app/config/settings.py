@@ -72,9 +72,20 @@ class Settings(BaseSettings):
     EXECUTION_MAX_ATTEMPTS: int = 3
 
     # --- SAP integration — Step 7 onwards -------------------------------
+    # SAP_API_FAMILY selects the prepared connector profile: s4hana,
+    # business_accelerator_hub, btp or integration_suite.
+    # Authentication is environment-based: when SAP_AUTH_URL is set the
+    # connector uses OAuth2 client credentials and requests the read or write
+    # scope below; otherwise it falls back to the gateway x-api-key convention.
+    # Write access is separately permissioned and disabled by default.
+    SAP_API_FAMILY: str = "s4hana"
     SAP_BASE_URL: str = ""
+    SAP_AUTH_URL: str = ""
     SAP_CLIENT_ID: str = ""
     SAP_CLIENT_SECRET: str = ""
+    SAP_READ_SCOPE: str = "sap.read"
+    SAP_WRITE_SCOPE: str = "sap.write"
+    SAP_WRITE_ENABLED: bool = False
     SAP_USE_MOCK: bool = True
 
     # --- External data APIs — Step 2 onwards ----------------------------
@@ -141,6 +152,11 @@ class Settings(BaseSettings):
     def sap_configured(self) -> bool:
         """True when SAP credentials are present and mocks are disabled."""
         return bool(self.SAP_BASE_URL and self.SAP_CLIENT_ID and self.SAP_CLIENT_SECRET)
+
+    @property
+    def sap_oauth_configured(self) -> bool:
+        """True when a token endpoint and client credentials are configured."""
+        return bool(self.SAP_AUTH_URL and self.SAP_CLIENT_ID and self.SAP_CLIENT_SECRET)
 
     @property
     def approver_auth_configured(self) -> bool:

@@ -83,3 +83,33 @@ export function startWorkflow(requestBody) {
     body: JSON.stringify(requestBody),
   })
 }
+
+/** Control-tower KPI counts and the latest recorded runs. */
+export function getDashboardOverview() {
+  return request('/dashboard/overview')
+}
+
+/** Recorded workflow runs, newest first. */
+export function getWorkflowRuns(limit = 25) {
+  return request(`/dashboard/runs?limit=${limit}`)
+}
+
+/** One workflow run with the recorded agent state. */
+export function getWorkflowRun(threadId) {
+  return request(`/dashboard/runs/${encodeURIComponent(threadId)}`)
+}
+
+/** Recent assessed disruptions. */
+export function getDisruptions(limit = 25) {
+  return request(`/dashboard/disruptions?limit=${limit}`)
+}
+
+/** Shipment master data with suppliers. */
+export function getShipments() {
+  return request('/dashboard/shipments')
+}
+
+/** SAP inventory positions and material master (labelled simulated or live). */
+export function getInventory() {
+  return request('/dashboard/inventory')
+}

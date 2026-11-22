@@ -17,6 +17,7 @@ from app.config.logging_config import configure_logging
 from app.config.settings import get_settings
 from app.database.session import check_database_connection, get_engine
 from app.services.approval_repository import ensure_approval_schema
+from app.services.workflow_history import ensure_workflow_run_schema
 
 settings = get_settings()
 configure_logging(settings.LOG_LEVEL, settings.LOG_JSON)
@@ -33,8 +34,9 @@ async def lifespan(app: FastAPI):
         logger.info("PostgreSQL connection verified.")
         try:
             ensure_approval_schema(get_engine())
+            ensure_workflow_run_schema(get_engine())
         except Exception:  # noqa: BLE001 - startup must not fail on schema setup
-            logger.exception("Could not ensure the approval schema exists.")
+            logger.exception("Could not ensure a database schema exists.")
     else:
         logger.warning(
             "PostgreSQL is not reachable — database-backed features are unavailable."
