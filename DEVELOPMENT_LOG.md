@@ -657,4 +657,131 @@ interrupt/resume are unchanged and re-verified by the Step 4 tests.
 
 ---
 
+## 2026-11-22 — Session 6: Step 6 — Human-in-the-Loop and Authorized Execution
+
+### Starting point (session-recovery protocol)
+
+Resumed from `PROJECT_PROGRESS.md` §12 and `TASK_CHECKLIST.md` Step 6, with Step 5
+verified complete (suite 265 passed / 6 skipped). The Step 4 approval gate,
+Step 5 collaboration record and the Step 2 `evaluate_approval` engine were read
+first and **extended, not replaced**: the legacy `{"approved": bool}` interrupt
+payload still works, and every Step 0–5 test still passes.
+
+### Work completed
+
+1. **`app/schemas/approval_schemas.py`** — `ProposalSnapshot` with a deterministic
+   `compute_version()`, `ApproverIdentity` / `ApproverRole`, decision request,
+   record and outcome models, and `ApprovalRequestView` for the queue.
+2. **`app/schemas/execution_schemas.py`** — `ExecutionAction`,
+   `ExecutionActionType`, action/run statuses and `ExecutionReport`.
+3. **`app/models/approvals.py`** — `ApprovalRequestRow` (`approval_requests`), one
+   row per thread holding the current proposal, version, level, status,
+   decision-history JSON and execution report.
+4. **`app/services/approval_auth.py`** — `APPROVER_CREDENTIALS` parsing
+   (`token:approver_id:Role`), constant-time authentication with
+   `secrets.compare_digest` across every entry, Manager < Director < Admin
+   hierarchy, bearer-header parsing and fail-closed configuration errors.
+5. **`app/services/approval_repository.py`** — `ApprovalRepository` protocol,
+   `PostgresApprovalRepository`, `InMemoryApprovalRepository` and
+   `ensure_approval_schema`.
+6. **`app/services/execution.py`** — `build_execution_plan`, `ExecutionService`
+   (idempotent replay, refusal of unapproved/unversioned proposals),
+   `SimulatedExecutionAdapter` and `HttpExecutionAdapter`, plus the
+   `get_execution_adapter` factory.
+7. **`app/services/approval_service.py`** — the ordered decision coordinator:
+   authenticate → confirm paused at `approval_gate` → ensure/record the queue item
+   → require pending → match the submitted version to the stored and current
+   workflow versions → authorize the role → resume → append the decision record →
+   execute only on approve + `completed` → record the next pending version when
+   paused again.
+8. **`app/orchestration/approvals.py`** — proposal snapshot from state, resume
+   payload, legacy decision parsing, `build_modification_revision` and
+   `MAX_MODIFICATION_ROUNDS = 2`.
+9. **`app/orchestration/state.py` / `workflow.py`** — `RecoveryRecommendation`
+   gained `proposal_version` / `approval_history`; the state gained accumulating
+   `approval_history` and `modification_rounds`; the gate publishes its version,
+   accepts authenticated and legacy payloads, records identity, role, comment,
+   version, timestamp and history, and routes a modification request back to the
+   Scenario agent.
+10. **`app/api/approvals.py`** — `GET /api/approvals/pending`,
+    `GET /api/approvals/{thread_id}`, `POST /api/approvals/{thread_id}/decision`
+    and `GET /api/approvals/{thread_id}/execution`, with 401/403/404/409/503
+    mapping and bearer authentication. The unauthenticated Step 4
+    `POST /api/orchestration/…/resume` endpoint was removed.
+11. **`app/config/settings.py`** — `APPROVER_CREDENTIALS`, `EXECUTION_USE_MOCK`,
+    `EXECUTION_BASE_URL` / `CLIENT_ID` / `CLIENT_SECRET`, timeout and attempts,
+    with derived properties.
+12. **`app/integrations/base.py`** — added `post_json` with an
+    `Idempotency-Key` header; the retry transport now handles GET and POST.
+13. **`app/main.py`** — creates the `approval_requests` schema at startup when the
+    database is reachable.
+14. **Frontend Approval Center** (`frontend/src/pages/ApprovalCenter.jsx` plus
+    `App.jsx`, `services/api.js`, `index.css`) — token entry kept in
+    `sessionStorage`, pending queue, proposal with version/reasons/violations,
+    full decision history, approve/reject/request-modification actions and the
+    execution report with its `[SIMULATED]` marker.
+15. **`backend/docs/approval-and-execution.md`**, **`tests/test_approvals.py`**
+    (50 tests), plus README, both `.env.example` templates, `TASK_CHECKLIST.md`
+    and `PROJECT_PROGRESS.md`.
+
+### Important implementation decisions
+
+- **Version-bound decisions.** The version is a SHA-256 digest of canonical JSON
+  excluding `thread_id`, the version and `created_at`, so the graph and the API
+  derive the same value; a stale submitted version is rejected with `409`.
+- **Fail closed.** No approver identity or approval flag is accepted from the
+  body; identity comes only from a bearer token. Unconfigured/malformed
+  credentials return `503`, and an unknown approval level is Admin-only.
+- **Idempotent execution.** Action keys are
+  `thread_id:proposal_version:action_type`; a repeated request replays the stored
+  report with `idempotent_replay=True` instead of re-executing.
+- **Bounded human loop.** `MAX_MODIFICATION_ROUNDS = 2`; each revision excludes
+  the rejected recommendation and preserves history, and exceeding the bound
+  closes the workflow as `approval_rejected`.
+- **Persisted queue, not in-memory.** A decision can be taken in a different
+  process from the one that interrupted the run; a new version opens a new pending
+  review and clears the old execution report.
+- **Simulated by default.** `EXECUTION_USE_MOCK=true` returns `SIM-…` references
+  and `[SIMULATED]` messages, so the platform never claims a real operational
+  change.
+
+### Dependencies installed
+
+- None. Step 6 reuses SQLAlchemy/PostgreSQL, the standard-library `secrets`
+  module, the Step 2 `httpx` transport and FastAPI.
+
+### Tests and results
+
+| Check | Result |
+| --- | --- |
+| `python -m pytest` (full backend suite) | ✅ **315 passed, 6 skipped** (321 collected) |
+| `pytest tests/test_approvals.py` | ✅ **50 passed** |
+| `pytest tests/test_orchestration.py` | ✅ **19 passed, 1 skipped** (Step 4 behaviour unchanged, legacy payload still accepted) |
+| `pytest tests/test_collaboration.py` | ✅ **14 passed** (Step 5 behaviour unchanged) |
+| `npm run build` | ✅ passes, including the Approval Center |
+| Modification-loop probe | ✅ initial version `f374ff35a40bb879` → revised plan `e238c95bc72b356b` → revert → bound hit → `approval_rejected` with three `request_modifications` history entries |
+
+### Problems encountered and their solutions
+
+1. **`NameError: STATUS_RUNNING` in `build_approval_gate`** when a modification
+   request resumed the graph. *Solution:* `STATUS_RUNNING` was missing from the
+   state import block; added it and re-probed the full modification loop.
+2. **Adapter configuration failure bypassed the 503 mapping** — FastAPI resolves
+   dependencies before the endpoint's own `try/except`. *Solution:* the
+   `execution_adapter` dependency catches `IntegrationNotConfiguredError` and
+   raises `HTTPException(503)` itself.
+3. **The queue had to survive a process boundary** — an in-memory-only design
+   would make a paused run unresumable after restart. *Solution:* the
+   `approval_requests` table plus a repository protocol with a Postgres
+   implementation and an in-memory fake for tests.
+
+### Remaining work
+
+- Step 7 (SAP Integration) and beyond — see `TASK_CHECKLIST.md`. Step 6 is
+  complete and verified; the roadmap rule "do not proceed to the next step
+  automatically" was observed. A manual browser walkthrough of the Approval
+  Center is still pending and is tracked with the Step 8 dashboard work.
+
+---
+
 _All progress files updated at the end of this milestone._

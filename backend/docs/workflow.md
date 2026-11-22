@@ -153,9 +153,14 @@ without a conversation transcript.
 ## Interruption and resume
 
 `approval_gate` calls LangGraph's `interrupt(...)`, which pauses the graph and
-returns the approval request to the caller. The run continues from its saved
-checkpoint when the caller resumes with `{"approved": bool, "comment": str}`. An
-approval is recorded as `STATUS_COMPLETED`; a rejection as `STATUS_APPROVAL_REJECTED`.
+returns the approval request to the caller. From Step 6 the run is resumed through
+the authenticated `POST /api/approvals/{thread_id}/decision` endpoint, which sends
+an `ApprovalResumePayload` (`action`, `comment`, `proposal_version`) plus the
+approver identity derived from the bearer token. The gate still accepts the Step 4
+legacy payload `{"approved": bool, "comment": str}` for direct graph calls. An
+approval is recorded as `STATUS_COMPLETED`; a rejection closes the run as
+`STATUS_APPROVAL_REJECTED`; a modification request re-plans and pauses again on a
+new proposal version (bounded by `MAX_MODIFICATION_ROUNDS`).
 
 ## Checkpointing
 
@@ -174,5 +179,9 @@ The backend is selected by `LANGGRAPH_CHECKPOINT_BACKEND` (`"postgres"` by defau
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/orchestration/workflows` | Start a run for one disruption. |
-| `POST` | `/api/orchestration/workflows/{thread_id}/resume` | Answer the approval gate and continue. |
 | `GET` | `/api/orchestration/workflows/{thread_id}/state` | Read the last saved state. |
+| `POST` | `/api/approvals/{thread_id}/decision` | Answer the approval gate and continue (authenticated, version-bound — see `approval-and-execution.md`). |
+
+The Step 4 unauthenticated `POST …/workflows/{thread_id}/resume` endpoint was
+removed in Step 6: every decision goes through the authenticated approval API,
+which records the approver identity and timestamp and executes only on approval.

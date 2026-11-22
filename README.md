@@ -73,7 +73,7 @@ X Factor/
 │   │   ├── main.py            FastAPI app (CORS, logging, error handling)
 │   │   ├── api/               HTTP routers (health check)
 │   │   ├── agents/            Specialised AI agents (Steps 1 & 3)
-│   │   ├── orchestration/     LangGraph supervisor (Steps 4 & 5)
+│   │   ├── orchestration/     LangGraph supervisor (Steps 4–6)
 │   │   ├── tools/             Deterministic business logic (Step 2)
 │   │   ├── integrations/      External APIs and SAP connectors (Steps 2 & 7)
 │   │   ├── models/            SQLAlchemy ORM models
@@ -83,7 +83,7 @@ X Factor/
 │   │   ├── config/            Settings and logging configuration
 │   │   └── utils/             Shared helpers
 │   ├── tests/                 pytest test-suite
-│   ├── docs/                  Workflow and collaboration design notes
+│   ├── docs/                  Workflow, collaboration and approval design notes
 │   ├── requirements.txt
 │   ├── pytest.ini
 │   └── .env.example
@@ -156,9 +156,16 @@ cd "d:\X Factor\backend"
 | `GET /api/health` | Service + PostgreSQL health |
 | `GET /api/health/live` | Liveness probe (no dependencies) |
 | `POST /api/orchestration/workflows` | Start a supervisor recovery run |
-| `POST /api/orchestration/workflows/{thread_id}/resume` | Answer the approval gate and resume |
 | `GET /api/orchestration/workflows/{thread_id}/state` | Read the last saved workflow state |
+| `GET /api/approvals/pending` | Proposals awaiting an authenticated decision |
+| `GET /api/approvals/{thread_id}` | One proposal with its full decision history |
+| `POST /api/approvals/{thread_id}/decision` | Approve, reject or request modifications |
+| `GET /api/approvals/{thread_id}/execution` | The execution report produced after approval |
 | `GET /docs` | OpenAPI / Swagger UI |
+
+The `/api/approvals/*` endpoints require `Authorization: Bearer <token>` and
+return `503` until `APPROVER_CREDENTIALS` is configured. The unauthenticated
+Step 4 resume endpoint was replaced by these authenticated decision endpoints.
 
 ### Frontend (http://localhost:5173)
 
@@ -186,6 +193,8 @@ Names only — never commit real values.
 | `DB_CONNECT_TIMEOUT` | Database connect timeout (seconds) |
 | `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_TIMEOUT_SECONDS` | Gemini LLM reasoning |
 | `LANGGRAPH_MAX_ITERATIONS`, `LANGGRAPH_CHECKPOINT_BACKEND` | Orchestration limits |
+| `APPROVER_CREDENTIALS` | Comma-separated `token:approver_id:Role` approver tokens (approval API returns 503 until set) |
+| `EXECUTION_USE_MOCK`, `EXECUTION_BASE_URL`, `EXECUTION_CLIENT_ID`, `EXECUTION_CLIENT_SECRET`, `EXECUTION_TIMEOUT_SECONDS`, `EXECUTION_MAX_ATTEMPTS` | Authorized execution (simulated by default) |
 | `SAP_BASE_URL`, `SAP_CLIENT_ID`, `SAP_CLIENT_SECRET`, `SAP_USE_MOCK` | SAP integration |
 | `VITE_API_BASE_URL` (frontend) | Backend API base URL |
 
@@ -209,23 +218,33 @@ npm run build
 
 ## Current status
 
-**Phase: Step 5 — Multi-Agent Collaboration and Autonomous Replanning (complete).**
+**Phase: Step 6 — Human-in-the-Loop and Authorized Execution (complete).**
 
-Steps 0–4 delivered the platform skeleton, Gemini reasoning, the deterministic
-tools, all five specialised agents and the compiled LangGraph supervisor. Step 5
-makes the collaboration auditable: every delegation is a structured `AgentTask`,
-every tool call is recorded from the real invocation, each agent attempt is an
-`AgentExecution`, the supervisor screens the Scenario agent's plan with the same
-deterministic engines Agent 5 audits with, and a rejected plan triggers at most
-`MAX_REPLAN_ROUNDS = 2` bounded revisions that preserve the plan they replaced.
+Steps 0–5 delivered the platform skeleton, Gemini reasoning, the deterministic
+tools, all five specialised agents, the compiled LangGraph supervisor and the
+auditable collaboration layer. Step 6 makes the human decision and the
+subsequent action safe:
 
-Backend suite: **265 passed, 6 skipped** (the skips are the opt-in
+- the paused proposal is snapshotted and versioned deterministically, and a
+  decision is rejected if it targets a stale version;
+- only a bearer-authenticated approver with the required role can decide; the
+  approver identity and timestamp are recorded, and the full decision history is
+  preserved across reconsideration rounds;
+- an approver may approve, reject or request modifications, with the modification
+  loop bounded by `MAX_MODIFICATION_ROUNDS = 2`;
+- only an approved, completed workflow is executed, through an idempotent
+  execution service (shipment plan update, inventory transfer, carrier change and
+  SAP execution) that is clearly `[SIMULATED]` by default;
+- the approval interface lives in the frontend Approval Center tab.
+
+Backend suite: **315 passed, 6 skipped** (the skips are the opt-in
 `RUN_LIVE_GEMINI=1` tests).
 
-The next step is **Step 6 — Human-in-the-Loop and Authorised Execution** (not
-started).
+The next step is **Step 7 — SAP Integration** (not started). The Step 6 execution
+adapter is the write path SAP integration will eventually target.
 
-Workflow details: [backend/docs/workflow.md](backend/docs/workflow.md) and
-[backend/docs/collaboration.md](backend/docs/collaboration.md).
+Workflow details: [backend/docs/workflow.md](backend/docs/workflow.md),
+[backend/docs/collaboration.md](backend/docs/collaboration.md) and
+[backend/docs/approval-and-execution.md](backend/docs/approval-and-execution.md).
 See [PROJECT_PROGRESS.md](PROJECT_PROGRESS.md) for the live status and
 [DEVELOPMENT_ROADMAP.txt](DEVELOPMENT_ROADMAP.txt) for the full roadmap.

@@ -13,4 +13,8 @@ deterministic engines (which live in :mod:`app.tools`):
   warehouse-position, transfer and rejection models.
 - ``audit_schemas``       (Step 3) — ``AuditRequest`` / ``AuditReport`` /
   ``AuditEvidence`` + ``AuditVerdict``.
+- ``approval_schemas``    (Step 6) — ``ProposalSnapshot`` / ``ApprovalDecisionRecord`` /
+  ``ApprovalRequestView`` + approval action, status and approver role enums.
+- ``execution_schemas``   (Step 6) — ``ExecutionAction`` / ``ExecutionReport`` +
+  execution action and run status enums.
 """

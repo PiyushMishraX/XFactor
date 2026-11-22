@@ -29,6 +29,7 @@ from typing import Annotated, Any, Dict, List, Optional, TypedDict
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.audit_schemas import AuditVerdict
+from app.schemas.approval_schemas import ApprovalDecisionRecord
 from app.schemas.collaboration_schemas import (
     AgentExecution,
     AgentTask,
@@ -230,6 +231,15 @@ class RecoveryRecommendation(BaseModel):
         description="Agents whose task could not run because an integration was unavailable.",
     )
 
+    # --- Human approval record (Step 6) ---------------------------------
+    proposal_version: Optional[str] = Field(
+        default=None, description="Deterministic version of the proposal that was decided."
+    )
+    approval_history: List[ApprovalDecisionRecord] = Field(
+        default_factory=list,
+        description="Every authenticated human decision, in order, across reconsideration rounds.",
+    )
+
 
 # ---------------------------------------------------------------------------
 # LangGraph state
@@ -292,3 +302,7 @@ class WorkflowState(TypedDict, total=False):
     scenario_screening: Optional[Dict[str, Any]]
     scenario_revision: Optional[Dict[str, Any]]
     replan_rounds: int
+
+    # --- Human approval control (Step 6) --------------------------------
+    approval_history: Annotated[List[Dict[str, Any]], operator.add]
+    modification_rounds: int

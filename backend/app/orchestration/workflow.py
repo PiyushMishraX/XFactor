@@ -72,6 +72,12 @@ from app.integrations.base import IntegrationNotConfiguredError
 from app.integrations.carriers import CarrierConnector, get_carrier_connector
 from app.integrations.mapping import MappingConnector, get_mapping_connector
 from app.integrations.sap import SAPConnector, get_sap_connector
+from app.orchestration.approvals import (
+    MAX_MODIFICATION_ROUNDS,
+    build_modification_revision,
+    build_proposal_snapshot,
+    parse_approval_decision,
+)
 from app.orchestration.checkpointing import open_checkpointer
 from app.orchestration.collaboration import (
     MAX_REPLAN_ROUNDS,
@@ -101,12 +107,14 @@ from app.orchestration.state import (
     STATUS_NO_ACTION,
     STATUS_NO_COMPLIANT_RECOVERY,
     STATUS_NO_FEASIBLE_RECOVERY,
+    STATUS_RUNNING,
     RecoveryRecommendation,
     RecoveryRequest,
     SupervisorDecision,
     WorkflowState,
 )
 from app.schemas.audit_schemas import AuditReport, AuditRequest, AuditVerdict
+from app.schemas.approval_schemas import ApprovalAction, ApprovalDecisionRecord
 from app.schemas.collaboration_schemas import (
     AgentExecution,
     AgentTask,
@@ -786,16 +794,23 @@ def _decide(state: WorkflowState) -> Tuple[str, str, Optional[str]]:
     rebalancing = state.get("rebalancing")
     skipped = state.get("skipped_agents") or []
 
-    # 3a. Did deterministic screening reject the last plan?
+    # 3a. Did deterministic screening reject the last plan, or a human ask for changes?
     revision = _state_revision(state)
     if revision is not None and plan is None:
-        return (
-            AGENT_SCENARIO,
-            f"Deterministic screening rejected {', '.join(revision.rejected_scenario_ids) or 'the previous recommendation'}, "
-            f"so the supervisor requests revision round {revision.round} excluding those "
-            f"alternatives before auditing.",
-            None,
-        )
+        if revision.feedback.startswith("Human review requested modifications"):
+            reason = (
+                f"Human review requested modifications, so the supervisor requests "
+                f"scenario revision round {revision.round} with that feedback before "
+                f"re-auditing."
+            )
+        else:
+            reason = (
+                f"Deterministic screening rejected "
+                f"{', '.join(revision.rejected_scenario_ids) or 'the previous recommendation'}, "
+                f"so the supervisor requests revision round {revision.round} excluding those "
+                f"alternatives before auditing."
+            )
+        return AGENT_SCENARIO, reason, None
 
     # 3. Are additional scenarios required?
     if required and plan is None:
@@ -921,28 +936,25 @@ def build_supervisor_node(
 # ---------------------------------------------------------------------------
 
 
-def _interpret_approval(value: Any) -> Tuple[bool, str]:
-    """Read a human decision from whatever the caller resumed with."""
-    if isinstance(value, bool):
-        return value, ""
-    if isinstance(value, dict):
-        comment = value.get("comment") or value.get("reason") or ""
-        return bool(value.get("approved")), str(comment)
-    if isinstance(value, str):
-        text = value.strip()
-        return text.lower() in {"approve", "approved", "yes", "true", "ok"}, text
-    return False, "" if value is None else str(value)
-
-
 def build_approval_gate() -> Callable[[WorkflowState], Dict[str, Any]]:
-    """Build the interrupt node that pauses the workflow for a human decision."""
+    """Build the interrupt node that pauses the workflow for a human decision.
+
+    The node publishes the proposal version so the approval API can bind a
+    decision to the exact plan the reviewer saw. On resume it accepts the Step 6
+    payload (action + authenticated approver identity) as well as the simpler
+    Step 4 payload, and it supports a bounded "request modifications" loop that
+    sends the plan back to the Scenario agent with the reviewer's feedback.
+    """
 
     def approval_gate(state: WorkflowState) -> Dict[str, Any]:
         audit = AuditReport.model_validate(state["audit_report"])
+        snapshot = build_proposal_snapshot("", state)
+        proposal_version = snapshot.proposal_version if snapshot is not None else ""
         decision = interrupt(
             {
                 "type": "approval_required",
                 "proposal_id": audit.proposal_id,
+                "proposal_version": proposal_version,
                 "verdict": audit.verdict.value,
                 "approval_level": audit.approval.approval_level,
                 "reasons": list(audit.approval.reasons),
@@ -950,30 +962,90 @@ def build_approval_gate() -> Callable[[WorkflowState], Dict[str, Any]]:
                 "is_within_budget": audit.is_within_budget,
                 "violations": [finding.detail for finding in audit.violations],
                 "question": (
-                    "Approve this recovery proposal, or reject it with a reason. The "
-                    "workflow resumes from its saved checkpoint with your answer."
+                    "Approve this recovery proposal, reject it, or request modifications. "
+                    "Only an authenticated approver may decide, and the workflow resumes "
+                    "from its saved checkpoint with that decision."
                 ),
             }
         )
-        approved, comment = _interpret_approval(decision)
+        record = parse_approval_decision(decision)
         update: Dict[str, Any] = {
             "approval": {
-                "approved": approved,
-                "comment": comment,
+                "approved": record.approved,
+                "action": record.action.value,
+                "comment": record.comment,
                 "approval_level": audit.approval.approval_level,
-                "decided_by": "human",
+                "decided_by": record.approver_id or "human",
+                "approver_role": record.approver_role,
+                "proposal_version": record.proposal_version or proposal_version,
+                "decided_at": record.decided_at.isoformat(),
             },
+            "approval_history": [record.model_dump(mode="json")],
             "next_action": NODE_FINALIZE,
         }
-        if approved:
+
+        if record.action is ApprovalAction.APPROVE:
             update["status"] = STATUS_COMPLETED
             logger.info("Approval granted for %s", audit.proposal_id)
-        else:
+            return update
+
+        if record.action is ApprovalAction.REJECT:
             update["status"] = STATUS_APPROVAL_REJECTED
             update["errors"] = [
-                f"Approval rejected for {audit.proposal_id}: {comment or 'no reason given'}"
+                f"Approval rejected for {audit.proposal_id}: "
+                f"{record.comment or 'no reason given'}"
             ]
             logger.info("Approval rejected for %s", audit.proposal_id)
+            return update
+
+        # Request modifications: reconsider, but only within the bounded budget.
+        used = int(state.get("modification_rounds") or 0)
+        if used >= MAX_MODIFICATION_ROUNDS:
+            update["status"] = STATUS_APPROVAL_REJECTED
+            update["errors"] = [
+                f"Reviewer requested modifications for {audit.proposal_id}, but the "
+                f"workflow already used its {MAX_MODIFICATION_ROUNDS} reconsideration "
+                f"round(s); the workflow is closed."
+            ]
+            logger.info(
+                "Modification limit reached for %s; closing the workflow", audit.proposal_id
+            )
+            return update
+
+        round_number = used + 1
+        revision = build_modification_revision(
+            state, round_number=round_number, comment=record.comment
+        )
+        logger.info(
+            "Reviewer requested modifications for %s; requesting scenario revision round %s",
+            audit.proposal_id,
+            round_number,
+        )
+        update.update(
+            {
+                "status": STATUS_RUNNING,
+                "next_action": AGENT_SCENARIO,
+                "modification_rounds": round_number,
+                "scenario_revision": revision.model_dump(mode="json"),
+                "scenario_plan": None,
+                "scenario_screening": None,
+                "audit_report": None,
+                "rerouting": None,
+                "rebalancing": None,
+                "decisions": [
+                    SupervisorDecision(
+                        step=int(state.get("step") or 0),
+                        action=AGENT_SCENARIO,
+                        reason=(
+                            f"Human review requested modifications for "
+                            f"{audit.proposal_id}, so the supervisor requests scenario "
+                            f"revision round {round_number} with the reviewer's feedback "
+                            f"before re-auditing."
+                        ),
+                    ).model_dump(mode="json")
+                ],
+            }
+        )
         return update
 
     return approval_gate
@@ -1147,6 +1219,7 @@ def finalize(state: WorkflowState) -> Dict[str, Any]:
         AgentExecution.model_validate(item) for item in (state.get("agent_executions") or [])
     ]
     screening_payload = state.get("scenario_screening")
+    snapshot = build_proposal_snapshot("", state)
     recommendation = RecoveryRecommendation(
         event_id=request.disruption_report.derive_event_id(),
         status=status,
@@ -1190,6 +1263,11 @@ def finalize(state: WorkflowState) -> Dict[str, Any]:
         ],
         replanning_rounds=int(state.get("replan_rounds") or 0),
         skipped_agents=list(dict.fromkeys(state.get("skipped_agents") or [])),
+        proposal_version=snapshot.proposal_version if snapshot is not None else None,
+        approval_history=[
+            ApprovalDecisionRecord.model_validate(item)
+            for item in (state.get("approval_history") or [])
+        ],
     )
     logger.info("Workflow finished for %s with status %s", recommendation.event_id, status)
     return {"recommendation": recommendation.model_dump(mode="json"), "status": status}
@@ -1268,7 +1346,10 @@ def build_graph(
     for name in AGENT_NODES:
         builder.add_conditional_edges(name, _route_next, [NODE_SUPERVISOR, NODE_ERROR, NODE_FINALIZE])
     builder.add_conditional_edges(NODE_ERROR, _route_next, [*AGENT_NODES, NODE_FINALIZE])
-    builder.add_edge(NODE_APPROVAL_GATE, NODE_FINALIZE)
+    # An approval may close the workflow or send the plan back for modification.
+    builder.add_conditional_edges(
+        NODE_APPROVAL_GATE, _route_next, [AGENT_SCENARIO, NODE_FINALIZE]
+    )
     builder.add_edge(NODE_FINALIZE, END)
 
     logger.info("Compiled the X FACTOR supervisor graph (%s node(s)).", len(builder.nodes))

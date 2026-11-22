@@ -1,17 +1,16 @@
 """HTTP surface for the LangGraph supervisor (Step 4).
 
-Three endpoints expose the workflow:
+Two endpoints expose the workflow:
 
 * ``POST /orchestration/workflows`` — start a recovery run for one disruption.
-* ``POST /orchestration/workflows/{thread_id}/resume`` — answer the approval gate
-  of a paused run and let it continue from its saved checkpoint.
+  When the run pauses at the human gate, the pending approval is persisted so it
+  appears in ``GET /approvals/pending``.
 * ``GET  /orchestration/workflows/{thread_id}/state`` — read the last saved state.
 
-The endpoints stay deliberately thin: they translate HTTP into
-:class:`~app.orchestration.workflow.SupervisorWorkflow` calls and back. All
-orchestration — delegation, retries, routing, the approval gate — lives in the
-graph. The workflow is built with the configured checkpointer, so a run paused at
-the approval gate can be resumed by a later request.
+Approval decisions are **not** accepted here: they live behind the authenticated
+``/approvals`` API (Step 6), so an unauthenticated request can never resume a
+paused workflow. All orchestration — delegation, retries, routing, the approval
+gate — lives in the graph.
 """
 
 from __future__ import annotations
@@ -24,8 +23,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db
+from app.orchestration.approvals import build_proposal_snapshot
 from app.orchestration.state import RecoveryRequest
 from app.orchestration.workflow import pending_interrupt, supervisor_runtime
+from app.services.approval_repository import PostgresApprovalRepository
+from app.services.approval_service import record_pending_approval
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +49,6 @@ class WorkflowInvocation(BaseModel):
     )
 
 
-class ApprovalDecision(BaseModel):
-    """Body for resuming an interrupted workflow."""
-
-    model_config = ConfigDict(str_strip_whitespace=True)
-
-    approved: bool = Field(description="Whether the human approves the proposal.")
-    comment: str = Field(default="", description="Reason or note attached to the decision.")
-
-
 def _serialise(thread_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
     """Turn a raw graph result into a JSON-safe response.
 
@@ -64,6 +57,7 @@ def _serialise(thread_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
     and the raw key is dropped.
     """
     approval_request = pending_interrupt(state)
+    snapshot = build_proposal_snapshot(thread_id, state)
     body: Dict[str, Any] = {
         "thread_id": thread_id,
         "status": state.get("status"),
@@ -78,6 +72,11 @@ def _serialise(thread_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
         "replanning": state.get("replanning") or [],
         "replanning_rounds": state.get("replan_rounds") or 0,
         "skipped_agents": state.get("skipped_agents") or [],
+        # Step 6 human approval record
+        "proposal_version": snapshot.proposal_version if snapshot is not None else None,
+        "approval": state.get("approval"),
+        "approval_history": state.get("approval_history") or [],
+        "modification_rounds": state.get("modification_rounds") or 0,
     }
     if approval_request is not None:
         body["approval_request"] = approval_request
@@ -105,28 +104,21 @@ def start_workflow(
         )
     with supervisor_runtime(session=session) as workflow:
         result = workflow.invoke(body.request, thread_id=thread_id)
-    return _serialise(thread_id, result)
 
-
-@router.post(
-    "/workflows/{thread_id}/resume",
-    summary="Resume an interrupted workflow",
-    status_code=status.HTTP_200_OK,
-)
-def resume_workflow(
-    thread_id: str, body: ApprovalDecision, session: Session = Depends(get_db)
-) -> Dict[str, Any]:
-    """Answer the approval gate and continue the run from its checkpoint."""
-    with supervisor_runtime(session=session) as workflow:
-        snapshot = workflow.snapshot(thread_id=thread_id)
-        if not getattr(snapshot, "next", None):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Thread {thread_id!r} is not paused at an approval gate.",
+    if pending_interrupt(result) is not None:
+        # Persist the queue item so an approver can find it. The checkpointed
+        # graph remains the source of truth; recording failure is logged, not
+        # hidden, and the approval API can rebuild the item from the checkpoint.
+        try:
+            record_pending_approval(
+                PostgresApprovalRepository(session), thread_id, result
             )
-        result = workflow.resume(
-            {"approved": body.approved, "comment": body.comment}, thread_id=thread_id
-        )
+        except Exception:  # noqa: BLE001 - never lose a completed workflow result
+            session.rollback()
+            logger.exception(
+                "Could not persist the pending approval for thread %s", thread_id
+            )
+
     return _serialise(thread_id, result)
 
 

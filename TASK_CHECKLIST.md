@@ -209,30 +209,30 @@ Derived from `DEVELOPMENT_ROADMAP.txt`. Statuses:
 
 ---
 
-## STEP 6 — Human-in-the-Loop and Authorized Execution
+## STEP 6 — Human-in-the-Loop and Authorized Execution ✅
 
-- [ ] Approval Management Engine evaluates approval requirements
-- [ ] LangGraph interrupt when approval is mandatory
-- [ ] Approval interface displays the proposal
-- [ ] Manager can approve / reject / request modifications
-- [ ] Resume workflow from saved checkpoint
-- [ ] Execute authorised operations on approval
-- [ ] Return rejection feedback to the supervisor
-- [ ] Record the entire decision history
-- [ ] Approval required: high-impact shipment rerouting
-- [ ] Approval required: major inventory redistribution
-- [ ] Approval required: actions exceeding budget thresholds
-- [ ] Approval required: sensitive supplier changes
-- [ ] Only authenticated/authorised users can approve
-- [ ] Never trust unauthenticated frontend approval status
-- [ ] Record approver identity and timestamp
-- [ ] Prevent duplicate execution (idempotency keys)
-- [ ] Validate approval against current proposal version
-- [ ] Execution service: shipment plan updates
-- [ ] Execution service: inventory transfer requests
-- [ ] Execution service: carrier change requests
-- [ ] Execution service: SAP API execution
-- [ ] Mock execution adapters where real credentials are unavailable, clearly labelled
+- [x] Approval Management Engine evaluates approval requirements
+- [x] LangGraph interrupt when approval is mandatory
+- [x] Approval interface displays the proposal
+- [x] Manager can approve / reject / request modifications
+- [x] Resume workflow from saved checkpoint
+- [x] Execute authorised operations on approval
+- [x] Return rejection feedback to the supervisor
+- [x] Record the entire decision history
+- [x] Approval required: high-impact shipment rerouting
+- [x] Approval required: major inventory redistribution
+- [x] Approval required: actions exceeding budget thresholds
+- [x] Approval required: sensitive supplier changes
+- [x] Only authenticated/authorised users can approve
+- [x] Never trust unauthenticated frontend approval status
+- [x] Record approver identity and timestamp
+- [x] Prevent duplicate execution (idempotency keys)
+- [x] Validate approval against current proposal version
+- [x] Execution service: shipment plan updates
+- [x] Execution service: inventory transfer requests
+- [x] Execution service: carrier change requests
+- [x] Execution service: SAP API execution
+- [x] Mock execution adapters where real credentials are unavailable, clearly labelled
 
 ---
 
@@ -368,7 +368,7 @@ Derived from `DEVELOPMENT_ROADMAP.txt`. Statuses:
 - [x] Tests added for every major component
 - [x] README updated after each major phase
 - [x] No secrets committed or exposed in frontend code
-- [ ] Human approval enforced before high-impact real-world actions
+- [x] Human approval enforced before high-impact real-world actions
 
 ---
 
@@ -382,7 +382,7 @@ Derived from `DEVELOPMENT_ROADMAP.txt`. Statuses:
 | 3 — Remaining Four Agents | ✅ Complete |
 | 4 — LangGraph Supervisor | ✅ Complete |
 | 5 — Collaboration + Replanning | ✅ Complete |
-| 6 — Human-in-the-Loop + Execution | ⬜ Not started |
+| 6 — Human-in-the-Loop + Execution | ✅ Complete |
 | 7 — SAP Integration | ⬜ Not started |
 | 8 — Agent Activity Dashboard | ⬜ Not started |
 | 9 — Testing + E2E Validation | ⬜ Not started |

@@ -162,6 +162,35 @@ class HttpJsonClient:
             IntegrationRequestError: The provider failed after every retry, or
                 returned a body that is not valid JSON.
         """
+        return self._send("GET", path, params=params)
+
+    def post_json(
+        self,
+        path: str,
+        *,
+        payload: Mapping[str, Any],
+        idempotency_key: Optional[str] = None,
+        headers: Optional[Mapping[str, str]] = None,
+    ) -> Any:
+        """POST ``payload`` to ``path`` and return the decoded JSON body.
+
+        ``idempotency_key`` is sent as the standard ``Idempotency-Key`` header so
+        a retried operational action is not executed twice by the target system.
+        """
+        extra = dict(headers or {})
+        if idempotency_key:
+            extra["Idempotency-Key"] = idempotency_key
+        return self._send("POST", path, json_body=dict(payload), headers=extra)
+
+    def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Mapping[str, Any]] = None,
+        json_body: Optional[Mapping[str, Any]] = None,
+        headers: Optional[Mapping[str, str]] = None,
+    ) -> Any:
         if not self.configured:
             raise IntegrationNotConfiguredError(
                 f"The {self._connector_name} connector has no base URL configured. "
@@ -174,7 +203,9 @@ class HttpJsonClient:
 
         for attempt in range(1, self._max_attempts + 1):
             try:
-                response = self._request(url, params)
+                response = self._request(
+                    url, params, method=method, json_body=json_body, headers=headers
+                )
             except httpx.HTTPError as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
                 logger.warning(
@@ -211,11 +242,32 @@ class HttpJsonClient:
             f"Last error: {last_error}"
         )
 
-    def _request(self, url: str, params: Optional[Mapping[str, Any]]) -> httpx.Response:
+    def _request(
+        self,
+        url: str,
+        params: Optional[Mapping[str, Any]],
+        *,
+        method: str = "GET",
+        json_body: Optional[Mapping[str, Any]] = None,
+        headers: Optional[Mapping[str, str]] = None,
+    ) -> httpx.Response:
+        merged = self._headers()
+        merged.update(dict(headers or {}))
+        if json_body is not None:
+            merged.setdefault("Content-Type", "application/json")
         if self._client is not None:
-            return self._client.get(url, params=params, headers=self._headers(), timeout=self._timeout)
+            return self._client.request(
+                method,
+                url,
+                params=params,
+                json=json_body,
+                headers=merged,
+                timeout=self._timeout,
+            )
         with httpx.Client(timeout=self._timeout) as client:
-            return client.get(url, params=params, headers=self._headers())
+            return client.request(
+                method, url, params=params, json=json_body, headers=merged
+            )
 
     def _decode(self, response: httpx.Response, url: str) -> Any:
         try:

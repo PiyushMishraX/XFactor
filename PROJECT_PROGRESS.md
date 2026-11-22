@@ -3,7 +3,7 @@
 > Update this file immediately after **every** meaningful implementation milestone.
 > Never rely on conversation history to remember completed work.
 
-_Last updated: 2026-11-22 (Step 5 complete)_
+_Last updated: 2026-11-22 (Step 6 complete)_
 
 ---
 
@@ -26,10 +26,10 @@ React (Vite) frontend.
 
 | Field | Value |
 | --- | --- |
-| Current phase | **Step 5 — Multi-Agent Collaboration and Autonomous Replanning** |
+| Current phase | **Step 6 — Human-in-the-Loop and Authorized Execution** |
 | Status | ✅ **Complete and verified** |
-| Overall completion (estimate) | **~65%** (Steps 0–5 of 11 roadmap steps) |
-| Next step | **Step 6 — Human-in-the-Loop and Authorised Execution** |
+| Overall completion (estimate) | **~75%** (Steps 0–6 of 11 roadmap steps) |
+| Next step | **Step 7 — SAP Integration** |
 
 ---
 
@@ -302,6 +302,82 @@ opens at most two bounded revisions that preserve the plan they replaced.
   selected agents receiving tasks. **14 passed.** Full suite: **265 passed, 6
   skipped**.
 
+### Step 6 — Human-in-the-Loop and Authorized Execution ✅
+
+Step 6 turns the Step 4 interrupt into an authenticated, version-bound decision
+and an idempotent execution. Nothing trusts a status supplied by the caller: the
+request body carries only an action, a comment and a proposal version; the
+approver identity is derived from a bearer credential.
+
+| Module | Purpose |
+| --- | --- |
+| `app/schemas/approval_schemas.py` | `ProposalSnapshot` + deterministic version, `ApproverIdentity` / `ApproverRole`, decision request/record/outcome, queue view |
+| `app/schemas/execution_schemas.py` | `ExecutionAction`, `ExecutionReport` and the action/run statuses |
+| `app/models/approvals.py` | `ApprovalRequestRow` (`approval_requests`, one row per thread) |
+| `app/services/approval_auth.py` | Constant-time token authentication (`secrets.compare_digest`) and Manager/Director/Admin hierarchy |
+| `app/services/approval_repository.py` | Queue persistence (`PostgresApprovalRepository`, `InMemoryApprovalRepository`, `ensure_approval_schema`) |
+| `app/services/approval_service.py` | The ordered security model: authenticate → paused? → version match → authorize → resume → record → execute → record new pending version |
+| `app/services/execution.py` | Deterministic plan, simulated/live adapters, idempotent `ExecutionService` |
+| `app/orchestration/approvals.py` | Proposal snapshot/version, resume payload, legacy parsing, bounded modification revisions |
+| `app/api/approvals.py` | Authenticated approval API |
+| `backend/docs/approval-and-execution.md` | Approval, versioning, execution and API reference |
+| `frontend/src/pages/ApprovalCenter.jsx` | Approval interface (token, queue, proposal, history, decisions, execution report) |
+
+- **Proposal version.** `ProposalSnapshot.proposal_version` is the first 16 hex
+  characters of a SHA-256 digest over canonical JSON, excluding `thread_id`,
+  `proposal_version` and `created_at`. The graph (no thread id) and the API (with
+  a thread id) therefore agree on the same version; any operational change
+  produces a different version.
+- **Authentication.** `APPROVER_CREDENTIALS` is a comma-separated list of
+  `token:approver_id:Role` entries. Tokens are compared against every entry with
+  `secrets.compare_digest`; the hierarchy is Manager < Director < Admin. An empty
+  or malformed configuration fails closed: every approval endpoint returns `503`.
+- **Queue persistence.** One row per thread holds the current proposal, version,
+  level, status, decision-history JSON and execution report. A new version starts
+  a new pending review, preserves history and clears the old execution report;
+  re-recording an already-decided version never reopens it.
+- **Decisions.** `ApprovalService.decide` authenticates, confirms the workflow is
+  paused at the gate, records the queue item if missing, rejects non-pending or
+  stale versions (both stored and current workflow versions), enforces the role,
+  resumes the checkpoint and appends an `ApprovalDecisionRecord` with approver id,
+  role, comment, proposal version and timestamp.
+- **Modifications and rejection.** A modification request builds a
+  `ScenarioRevision` excluding the recommended scenario and carrying the reviewer's
+  comment, sends the plan back to the Scenario agent, and pauses again on the new
+  proposal version with history preserved. `MAX_MODIFICATION_ROUNDS = 2`; one
+  request beyond the bound closes the workflow as `approval_rejected`. A rejection
+  closes the workflow immediately and produces no execution.
+- **Step 4 compatibility.** The gate still accepts the legacy
+  `{"approved": true}` payload (and booleans/words), attributed to `"human"`, so
+  the Step 4 tests and behaviour are unchanged.
+- **Authorized execution.** `build_execution_plan` emits `shipment_plan_update`
+  always, plus `inventory_transfer`, `carrier_change` and `sap_execution` when the
+  proposal requires them. Every action is keyed
+  `thread:proposal_version:action_type`; `ExecutionService` replays an existing
+  report instead of executing again, refuses unapproved/unversioned proposals, and
+  reports `completed` / `partial` / `failed`. The default adapter is clearly
+  labelled `[SIMULATED]`; the live adapter posts with an `Idempotency-Key` and
+  `x-client-id`.
+- **Secured API.** `GET /api/approvals/pending`, `GET …/{thread_id}`,
+  `POST …/{thread_id}/decision` and `GET …/{thread_id}/execution`. Errors map to
+  401 (missing/unknown token), 403 (insufficient role), 404 (no item/report),
+  409 (not paused, already decided, stale version) and 503 (credentials or
+  execution gateway unconfigured). The unauthenticated Step 4
+  `POST …/resume` endpoint was removed.
+- **Frontend.** The Approval Center tab keeps a pasted bearer token in
+  `sessionStorage` only, lists pending proposals, shows the version, reasons,
+  violations and full decision history, requires a comment for reject/modify,
+  submits decisions, and renders the execution report with its `[SIMULATED]`
+  marker. `npm run build` passes.
+- **Tests.** `tests/test_approvals.py` — 50 tests (version stability/exclusions,
+  credential parsing, authentication, hierarchy, bearer parsing, legacy and Step 6
+  payloads, approval/rejection identity+timestamp+history, the bounded
+  modification loop, execution plan/keys/labelling/replay/refusal/partial+failed
+  reports, live adapter via `httpx.MockTransport`, adapter factory, repository
+  semantics in memory and SQLite, and the API's 401/403/409/503 paths including
+  approve → execute → duplicate prevention and the modification round-trip).
+  **50 passed.** Full suite: **315 passed, 6 skipped**.
+
 ---
 
 ## 4. Partially completed steps
@@ -319,7 +395,7 @@ None.
 | 3 | Remaining four AI agents | ✅ Complete (verified) |
 | 4 | LangGraph supervisor and orchestration | ✅ Complete (verified) |
 | 5 | Multi-agent collaboration + autonomous replanning | ✅ Complete (verified) |
-| 6 | Human-in-the-loop and authorised execution | Not started |
+| 6 | Human-in-the-loop and authorized execution | ✅ Complete (verified) |
 | 7 | SAP integration | Not started |
 | 8 | Agent Activity and Decision dashboard | Not started |
 | 9 | Testing and end-to-end validation | Not started |
@@ -511,6 +587,46 @@ None.
 | `backend/app/agents/inventory_rebalancing.py` | Wraps the inventory/safety-stock engines and the Gemini call with `call_recorded` |
 | `backend/app/agents/compliance_audit.py` | Wraps the compliance, budget and approval engines and the Gemini call with `call_recorded` |
 
+### Created — backend (Step 6 — human approval and authorized execution)
+
+| File | Purpose |
+| --- | --- |
+| `backend/app/schemas/approval_schemas.py` | `ProposalSnapshot` + version, `ApproverIdentity` / `ApproverRole`, decision request/record/outcome, `ApprovalRequestView` |
+| `backend/app/schemas/execution_schemas.py` | `ExecutionAction`, `ExecutionReport`, `ExecutionActionType` / `Status`, `ExecutionRunStatus` |
+| `backend/app/models/approvals.py` | `ApprovalRequestRow` (`approval_requests`) |
+| `backend/app/services/approval_auth.py` | Credential parsing, constant-time authentication, role hierarchy, bearer parsing |
+| `backend/app/services/approval_repository.py` | Queue protocol, Postgres + in-memory repositories, `ensure_approval_schema` |
+| `backend/app/services/approval_service.py` | Authenticate → validate version → authorize → resume → record → execute coordinator |
+| `backend/app/services/execution.py` | Execution plan, simulated/live adapters, idempotent `ExecutionService` |
+| `backend/app/orchestration/approvals.py` | Proposal snapshot/version, resume payload, decision parsing, bounded modification revisions |
+| `backend/app/api/approvals.py` | Authenticated approval API and error mapping |
+| `backend/docs/approval-and-execution.md` | Approval, versioning, execution and API reference |
+| `backend/tests/test_approvals.py` | 50 Step 6 tests |
+
+### Modified — backend (Step 6)
+
+| File | Change |
+| --- | --- |
+| `backend/app/orchestration/state.py` | `RecoveryRecommendation` gained `proposal_version` and `approval_history`; `WorkflowState` gained accumulating `approval_history` and `modification_rounds` |
+| `backend/app/orchestration/workflow.py` | Gate publishes the proposal version, accepts authenticated/legacy payloads, records identity/timestamp/history, supports the bounded modification loop; `finalize` adds `proposal_version` and `approval_history` |
+| `backend/app/orchestration/__init__.py` | Re-exports the approval helpers and `MAX_MODIFICATION_ROUNDS` |
+| `backend/app/config/settings.py` | Added `APPROVER_CREDENTIALS`, `EXECUTION_USE_MOCK`, `EXECUTION_BASE_URL` / `CLIENT_ID` / `CLIENT_SECRET`, timeout/attempts and derived properties |
+| `backend/app/integrations/base.py` | Added `post_json` with `Idempotency-Key`; the retry transport now handles GET and POST |
+| `backend/app/api/orchestration.py` | Removed the unauthenticated resume endpoint, records the pending approval on interrupt, serialises `proposal_version` / `approval` / `approval_history` / `modification_rounds` |
+| `backend/app/api/router.py` | Registered the approvals router |
+| `backend/app/main.py` | Ensures the approval schema exists at startup when the database is reachable |
+| `backend/app/models/__init__.py`, `backend/app/schemas/__init__.py` | Export/register the new modules |
+| `backend/.env.example`, `.env.example` (root) | Documented `APPROVER_CREDENTIALS` and `EXECUTION_*` (names only) |
+
+### Created / modified — frontend (Step 6)
+
+| File | Change |
+| --- | --- |
+| `frontend/src/pages/ApprovalCenter.jsx` | Approval interface: token, pending queue, proposal/version/reasons/violations, decision history, decisions and execution report |
+| `frontend/src/App.jsx` | Overview / Approval Center tabs |
+| `frontend/src/services/api.js` | Bearer-token helper, approval endpoints and a header-merge fix so caller headers cannot drop auth |
+| `frontend/src/index.css` | Tabs, token form, fields, detail grids, decision/outcome and table styles |
+
 ### Created — frontend
 
 | File | Purpose |
@@ -582,6 +698,11 @@ oxlint 1.90.0 (24 packages installed, 0 vulnerabilities).
 Step 5 added **no new packages** — it reuses LangGraph, Pydantic and the existing
 Step 1/2 layers.
 
+Step 6 added **no new packages** — approval persistence uses the existing
+SQLAlchemy/PostgreSQL layer, authentication uses the standard-library `secrets`
+module, execution reuses `httpx` through the Step 2 `HttpConnector`, and the API
+reuses FastAPI/Starlette security primitives.
+
 ---
 
 ## 8. Environment variables configured
@@ -603,6 +724,15 @@ Added in Step 2: `INTEGRATION_TIMEOUT_SECONDS`, `INTEGRATION_MAX_ATTEMPTS`, and 
 makes the connector factories fall back to the clearly labelled simulated adapters.
 No paid external-data credentials are configured, so every external connector
 currently returns simulated data.
+
+Added in Step 6: `APPROVER_CREDENTIALS` (comma-separated `token:approver_id:Role`
+entries, names only — never committed), `EXECUTION_USE_MOCK`, `EXECUTION_BASE_URL`,
+`EXECUTION_CLIENT_ID`, `EXECUTION_CLIENT_SECRET`, `EXECUTION_TIMEOUT_SECONDS` and
+`EXECUTION_MAX_ATTEMPTS`. `APPROVER_CREDENTIALS` has no default, so every approval
+endpoint fails closed with `503` until an operator configures it; execution is
+simulated by default (`EXECUTION_USE_MOCK=true`) and the live executor raises
+`IntegrationNotConfiguredError` (mapped to `503`) if mock mode is off without a
+base URL.
 
 Real credentials **are** now configured in `backend/.env` (git-ignored and not
 committed): an Aiven PostgreSQL `DATABASE_URL` (`sslmode=require`) and a live
@@ -642,11 +772,12 @@ npm run dev
 
 | Test | Command | Result |
 | --- | --- | --- |
-| Backend unit tests (full suite) | `..\.venv\Scripts\python.exe -m pytest` (in `backend/`) | ✅ **271 tests collected; 265 passed, 6 skipped** (the 5 opt-in `RUN_LIVE_GEMINI=1` agent tests + 1 live supervisor test skip by default; repository tests skip when PostgreSQL is down) |
+| Backend unit tests (full suite) | `..\.venv\Scripts\python.exe -m pytest` (in `backend/`) | ✅ **321 tests collected; 315 passed, 6 skipped** (the 5 opt-in `RUN_LIVE_GEMINI=1` agent tests + 1 live supervisor test skip by default; repository tests skip when PostgreSQL is down) |
+| Step 6 approval + execution tests | `pytest tests/test_approvals.py` | ✅ **50 passed** (proposal versioning, credential parsing, authentication and role hierarchy, bearer parsing, legacy and Step 6 payloads, approve/reject identity + timestamp + history, bounded modification loop, execution plan/keys/labelling/replay/refusal, partial + failed reports, live adapter via `httpx.MockTransport`, repository semantics in memory and SQLite, API 401/403/409/503 including approve → execute → duplicate prevention and the modification round-trip) |
 | Step 5 collaboration tests | `pytest tests/test_collaboration.py` | ✅ **14 passed** (tasks ↔ decisions, tool-call recording, deterministic screening, one bounded revision preserving history, no-compliant recovery, unavailable tools, retries, JSON round-trip) |
 | **Live Gemini through the supervisor (Step 5)** | `$env:RUN_LIVE_GEMINI="1"; pytest tests/test_orchestration.py -k live` | ✅ **1 passed** — real Gemini reasoning through the new tool-recording wrappers |
 | Step 4 orchestration tests | `pytest tests/test_orchestration.py` | ✅ **19 passed, 1 skipped** (six roadmap scenarios, interrupt/resume, JSON state contract, iteration bound, Mermaid export, opt-in live) |
-| Orchestration API route check | `app.openapi()["paths"]` | ✅ `/api/orchestration/workflows`, `…/{thread_id}/resume`, `…/{thread_id}/state` mounted |
+| Orchestration + approval API route check | `app.openapi()["paths"]` | ✅ `/api/orchestration/workflows`, `…/{thread_id}/state` and `/api/approvals/pending`, `…/{thread_id}`, `…/{thread_id}/decision`, `…/{thread_id}/execution` mounted; the unauthenticated `…/{thread_id}/resume` route is gone |
 | Step 4 smoke run | `python xf_step4_smoke.py` | ✅ exit 0 — direct path, no-carrier path, High-severity path, full Mermaid source |
 | **Live PostgreSQL checkpoint** | `open_checkpointer(backend="postgres")` smoke | ✅ opened against the live Aiven database, `setup()` ran, a checkpoint was written and read back (`{'n': 21, 'doubled': 42}`) |
 | Step 3 agent tests (Agents 2–5) | `pytest tests/test_rerouting_logistics.py tests/test_inventory_rebalancing.py tests/test_compliance_audit.py tests/test_scenario_planning.py` | ✅ **57 passed, 4 skipped** (deterministic numbers, schema cannot carry a verdict/number, model cannot change the decision, failure paths) |
@@ -662,7 +793,7 @@ npm run dev
 | JSON logging mode | `configure_logging('INFO', True)` smoke test | ✅ Emitted valid JSON |
 | Backend service index | `GET http://127.0.0.1:8000/` | ✅ `200` with docs/health links |
 | Liveness probe | `GET http://127.0.0.1:8000/api/health/live` | ✅ `{"status":"ok"}` |
-| Frontend production build | `npm run build` | ✅ 21 modules, built OK |
+| Frontend production build | `npm run build` | ✅ built OK, including the Step 6 Approval Center |
 | Frontend serves | `GET http://localhost:5173/` | ✅ `200`, title `X FACTOR — Supply Chain Resilience` |
 | **Frontend → backend proxy** | `GET http://localhost:5173/api/health` | ✅ `200` proxied backend JSON |
 
@@ -710,59 +841,80 @@ npm run dev
    Step 1 note ("LangGraph deliberately not installed yet") is superseded: it was
    deferred until the step that needs it, to honour "do not add unnecessary
    packages".
-9. **Steps 6–10 not started** — intentional, per the roadmap rule not to proceed
-   automatically. Step 5 is complete: every delegation is a recorded `AgentTask`,
-   every tool call is recorded from the real invocation, each attempt is an
-   `AgentExecution`, the supervisor screens the Scenario plan deterministically and
-   a rejected plan triggers at most `MAX_REPLAN_ROUNDS = 2` bounded revisions that
-   preserve the previous plan. The Step 4 graph was extended, not replaced, and
-   the Step 4 public behaviour (delegation order, decisions, statuses, interrupt
-   /resume) is unchanged and re-verified by its own tests.
+9. **Steps 7–10 not started** — intentional, per the roadmap rule not to proceed
+   automatically. Step 6 is complete: the approval gate is authenticated and
+   version-bound, decisions are persisted with approver identity and timestamp,
+   modifications are bounded, and execution is idempotent and simulated by
+   default. Steps 0–5 are unchanged and re-verified by their own tests (315 passed
+   across the full suite).
 10. **Postgres checkpoint tables are created on first use.** `postgres_checkpointer()`
     calls `saver.setup()` (idempotent) when the workflow is built with the default
     `LANGGRAPH_CHECKPOINT_BACKEND=postgres`; a database must be reachable for that
     path. Tests use the in-memory checkpointer and need no database.
+11. **Approver credentials are not configured by default.** `APPROVER_CREDENTIALS`
+    is deliberately unset in the templates, so every `/api/approvals/*` endpoint
+    returns `503` until an operator supplies token entries. This is the intended
+    fail-closed behaviour, not a defect; the test suite injects a test authorizer
+    through FastAPI dependency overrides and never needs a real credential.
+12. **Execution is simulated by default and no execution gateway is configured.**
+    `EXECUTION_USE_MOCK=true` routes every action to `SimulatedExecutionAdapter`,
+    which returns `SIM-…` references and `[SIMULATED]` messages. The live
+    `HttpExecutionAdapter` is implemented and unit-tested via `httpx.MockTransport`
+    but has never been pointed at a real endpoint; Step 7's SAP writes are its
+    intended target.
+13. **Approval Center has not yet been exercised in a browser.** The production
+    build passes and the API paths are covered by tests, but a manual walkthrough
+    (token entry → pending queue → approve → execution report) is still pending
+    and belongs with the Step 8 dashboard work.
 
 ---
 
 ## 12. Exact next action
 
-**Start Step 6 — Human-in-the-Loop and Authorised Execution.**
+**Start Step 7 — SAP Integration.**
 
-Step 5 is complete and verified (see §3 and §10). The supervisor now issues
-structured tasks, records every real tool call and execution, screens scenario
-plans deterministically, replans within a hard bound and preserves history. Step 6
-builds on this rather than replacing it:
+Step 6 is complete and verified (see §3 and §10). The approval gate now
+authenticates a bearer credential, binds the decision to a proposal version,
+persists the queue and history, bounds modifications and executes only an
+approved proposal through an idempotent execution service. Step 7 builds on that
+rather than replacing it:
 
-1. **Approval Management Engine** — make the approval requirement an explicit,
-   recorded decision (the engine already exists; the runtime wiring is Step 6).
-2. **Approval interface** showing the proposal (reason, cost/risk impact,
-   validations) to the approver.
-3. **Approve / reject / request modifications**, with rejection feedback returned
-   to the supervisor.
-4. **Authorised execution service** — shipment plan updates, inventory transfer
-   requests, carrier change requests and SAP writes, each mock-labelled where
-   credentials are unavailable.
-5. **Authentication and authorisation** — never trust a frontend approval flag;
-   record approver identity and timestamp.
-6. **Idempotency and version checks** — prevent duplicate execution and validate
-   the approval against the current proposal version.
-7. **Record the entire decision history** through to execution.
-8. **Enforce approval** for high-impact reroutes, large inventory redistributions,
-   over-threshold spend and sensitive supplier changes.
+1. **Modular SAP connector** — extend the Step 2 read-only `SAPConnector` into a
+   modular interface with environment-based authentication.
+2. **Connector preparation** — S/4HANA, Business Accelerator Hub APIs, BTP and
+   Integration Suite, each behind the same factory pattern used by the Step 2
+   connectors.
+3. **Reads** — shipment information, purchase orders, supplier records, inventory
+   levels and material information.
+4. **Writes where supported** — shipment plan updates, inventory transfer
+   requests and approved operational changes, reached through the Step 6
+   execution path so no write bypasses approval.
+5. **Request validation**, rate-limit and API-failure handling, and
+   request/response logging that never exposes secrets.
+6. **Separate read and write permissions**, with approval required before any
+   sensitive write.
+7. **Labelled mock SAP adapter** when sandbox credentials are unavailable — the
+   default remains `SAP_USE_MOCK=true`.
 
-The Step 4 approval gate already interrupts and resumes from a PostgreSQL
-checkpoint, and Step 5 records why each agent was selected, so Step 6 adds
-identity, authorisation and execution on top of existing auditable data.
+The Step 6 `HttpExecutionAdapter` is the intended write transport; Step 7 supplies
+the SAP-specific endpoints, payload validation and permission split behind it.
 
 **Credentials available (recorded 2026-11-22) — do not re-ask:**
 
 1. **Gemini API key:** configured and verified live (`GEMINI_MODEL=gemini-3.5-flash`).
 2. **PostgreSQL:** the live managed (Aiven) `DATABASE_URL` is configured and
-   seeded with demo reference data; the supervisor's Postgres checkpointer uses it.
-3. **External-data API credentials:** none. This is expected — every Step 2
+   seeded with demo reference data; the supervisor's Postgres checkpointer uses it
+   and the `approval_requests` table is created on startup.
+3. **Approver credentials:** not configured. `APPROVER_CREDENTIALS` must be set
+   before any approval endpoint will accept a request (otherwise `503`); this is
+   the intended fail-closed behaviour and needs nothing from the developer unless
+   a manual demo is requested.
+4. **External-data API credentials:** none. This is expected — every Step 2
    connector falls back to clearly labelled simulated data, which is the
    deliberate design. No action is required from the developer.
+5. **SAP credentials:** none. `SAP_USE_MOCK=true` stays in effect, so Step 7 will
+   be validated against the labelled mock adapter; no action is required unless
+   live sandbox credentials are supplied.
 
 ---
 
@@ -895,3 +1047,37 @@ identity, authorisation and execution on top of existing auditable data.
     `SKIPPED` execution (agent added to `skipped_agents`, gap recorded) and scenario
     planning continues without inventory data. An absent integration never becomes
     simulated data and never fails the whole run.
+31. **The decision is bound to a proposal version (Step 6).** `proposal_version` is
+    a SHA-256 digest of canonical JSON excluding only `thread_id`, the version
+    itself and `created_at`, so the graph and the API independently derive the same
+    value and any operational change yields a different one. A decision whose
+    submitted version no longer matches both the stored item and the workflow's
+    current snapshot is rejected with `409`, which prevents an approval of an
+    outdated plan being executed.
+32. **Authentication fails closed (Step 6).** The request body carries no approver
+    identity and no approval flag; identity comes only from a bearer token matched
+    with `secrets.compare_digest` against `APPROVER_CREDENTIALS`. Missing or
+    malformed configuration makes every approval endpoint return `503` rather than
+    defaulting to allow, and an unknown approval level is treated as Admin-only,
+    not as Manager.
+33. **Execution is idempotent by key (Step 6).** Every action is keyed
+    `thread_id:proposal_version:action_type`. `ExecutionService` replays a stored
+    report instead of re-executing, and refuses any proposal that is unapproved,
+    unversioned or untraceable to a workflow thread — so a retried frontend click
+    or a duplicate resume cannot double-apply a shipment or inventory change.
+34. **Modifications are bounded and reopen only on a new version (Step 6).**
+    `MAX_MODIFICATION_ROUNDS = 2` caps the human feedback loop; each revision
+    excludes the rejected recommendation, preserves history, and pauses again on a
+    new proposal version. Exceeding the bound closes the workflow as
+    `approval_rejected` instead of looping, mirroring the Step 5 replanning bound.
+35. **The approval queue is persisted, not in-memory (Step 6).** One row per thread
+    (`approval_requests`) holds the current proposal, version, level, status,
+    decision-history JSON and execution report, so a decision can be taken in a
+    different process from the one that interrupted the run. A new version starts a
+    new pending review and clears the old execution report; re-recording an
+    already-decided version never reopens it.
+36. **Execution defaults to a labelled simulator (Step 6).** `EXECUTION_USE_MOCK`
+    defaults to true, so the platform never claims a real shipment or SAP change;
+    the live adapter is the same `httpx` transport as the Step 2 connectors and
+    raises `IntegrationNotConfiguredError` (mapped to `503`) when it is enabled
+    without a base URL.

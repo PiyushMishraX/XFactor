@@ -15,7 +15,8 @@ from fastapi.responses import JSONResponse
 from app.api.router import api_router
 from app.config.logging_config import configure_logging
 from app.config.settings import get_settings
-from app.database.session import check_database_connection
+from app.database.session import check_database_connection, get_engine
+from app.services.approval_repository import ensure_approval_schema
 
 settings = get_settings()
 configure_logging(settings.LOG_LEVEL, settings.LOG_JSON)
@@ -30,6 +31,10 @@ async def lifespan(app: FastAPI):
     )
     if check_database_connection():
         logger.info("PostgreSQL connection verified.")
+        try:
+            ensure_approval_schema(get_engine())
+        except Exception:  # noqa: BLE001 - startup must not fail on schema setup
+            logger.exception("Could not ensure the approval schema exists.")
     else:
         logger.warning(
             "PostgreSQL is not reachable — database-backed features are unavailable."

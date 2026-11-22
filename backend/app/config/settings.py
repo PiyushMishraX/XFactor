@@ -55,6 +55,22 @@ class Settings(BaseSettings):
     LANGGRAPH_MAX_ITERATIONS: int = 6
     LANGGRAPH_CHECKPOINT_BACKEND: str = "postgres"
 
+    # --- Human approval — Step 6 onwards --------------------------------
+    # Comma-separated approver credentials, each "token:approver_id:Role" with
+    # Role one of Manager, Director or Admin. Tokens are compared in constant
+    # time. NEVER commit real tokens; set this variable in the deployment.
+    APPROVER_CREDENTIALS: str = ""
+
+    # --- Authorized execution — Step 6 onwards --------------------------
+    # While true (the default) a clearly labelled simulated execution adapter is
+    # used and no operational system is changed.
+    EXECUTION_USE_MOCK: bool = True
+    EXECUTION_BASE_URL: str = ""
+    EXECUTION_CLIENT_ID: str = ""
+    EXECUTION_CLIENT_SECRET: str = ""
+    EXECUTION_TIMEOUT_SECONDS: int = 15
+    EXECUTION_MAX_ATTEMPTS: int = 3
+
     # --- SAP integration — Step 7 onwards -------------------------------
     SAP_BASE_URL: str = ""
     SAP_CLIENT_ID: str = ""
@@ -125,6 +141,18 @@ class Settings(BaseSettings):
     def sap_configured(self) -> bool:
         """True when SAP credentials are present and mocks are disabled."""
         return bool(self.SAP_BASE_URL and self.SAP_CLIENT_ID and self.SAP_CLIENT_SECRET)
+
+    @property
+    def approver_auth_configured(self) -> bool:
+        """True when at least one approver credential is configured."""
+        return bool(self.APPROVER_CREDENTIALS.strip())
+
+    @property
+    def execution_configured(self) -> bool:
+        """True when live execution credentials are present and mocks are disabled."""
+        return bool(
+            self.EXECUTION_BASE_URL and self.EXECUTION_CLIENT_ID and self.EXECUTION_CLIENT_SECRET
+        )
 
 
 @lru_cache
