@@ -89,7 +89,7 @@ client secret).
 | `list_shipments()` etc. on the live adapter | Same data through the profile paths |
 
 `SimulatedSAPConnector` returns five suppliers, ten shipments, five material
-master records, seven inventory positions and four purchase orders. Shipments and
+master records, eight inventory positions and four purchase orders. Shipments and
 suppliers mirror the seeded PostgreSQL reference data, so the connector and the
 database describe the same records.
 

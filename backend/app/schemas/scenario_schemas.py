@@ -113,6 +113,15 @@ class ScenarioPlan(BaseModel):
     inventory_impact: str = ""
     inventory_shortage_after: Optional[float] = None
     inventory_can_cover_disruption: bool = False
+    inventory_transfer_units: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Units Agent 4 recommends transferring. Carried on the plan so the "
+            "audit, approval proposal and execution plan see the same number "
+            "whether inventory ran as its own node or inside this agent."
+        ),
+    )
 
     # --- Deltas of the recommendation against the incumbent option -------
     cost_delta_vs_current_usd: Optional[float] = None

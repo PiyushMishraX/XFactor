@@ -302,6 +302,8 @@ def _audit_request(request: RecoveryRequest, state: WorkflowState) -> AuditReque
         certifications=tuple(request.certifications),
     )
     transferred = (state.get("rebalancing") or {}).get("total_transferred_units")
+    if transferred is None:
+        transferred = (state.get("scenario_plan") or {}).get("inventory_transfer_units")
     return AuditRequest(
         proposal=proposal,
         applicable_rules=list(request.applicable_rules),
@@ -505,7 +507,9 @@ def _screening_update(
     plan: ScenarioPlan,
 ) -> Dict[str, Any]:
     """Evaluate the plan deterministically and open the feedback loop if needed."""
-    transferred = float((state.get("rebalancing") or {}).get("total_transferred_units") or 0.0)
+    transferred = plan.inventory_transfer_units or float(
+        (state.get("rebalancing") or {}).get("total_transferred_units") or 0.0
+    )
     screening = evaluate_scenario_plan(
         request=request, plan=plan, inventory_transfer_units=transferred
     )

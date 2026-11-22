@@ -122,6 +122,7 @@ def build_proposal_snapshot(
     transfer_units = float(
         request.inventory_transfer_units
         or (state.get("rebalancing") or {}).get("total_transferred_units")
+        or (state.get("scenario_plan") or {}).get("inventory_transfer_units")
         or 0.0
     )
     current_carrier = scenario.current_carrier.strip()

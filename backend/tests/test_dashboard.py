@@ -19,6 +19,7 @@ from typing import Any, Dict, Iterator
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -280,6 +281,21 @@ def test_starting_a_workflow_records_the_run(
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(sap_connector, None)
+
+
+def test_unavailable_database_returns_503() -> None:
+    class FailingSession:
+        def execute(self, *args: Any, **kwargs: Any) -> Any:
+            raise OperationalError("SELECT 1", {}, Exception("database offline"))
+
+    app.dependency_overrides[get_db] = lambda: FailingSession()
+    try:
+        response = TestClient(app).get("/api/dashboard/overview")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "The workflow database is unavailable."
 
 
 def test_dashboard_routes_are_mounted() -> None:

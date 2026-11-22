@@ -158,6 +158,14 @@ _SAMPLE_INVENTORY: Sequence[Dict[str, Any]] = (
         "reorder_point_units": 9000.0,
     },
     {
+        "material_id": "MAT-PHARMA-001",
+        "description": "Paracetamol API",
+        "plant": "Rotterdam DC",
+        "on_hand_units": 3000.0,
+        "safety_stock_units": 6000.0,
+        "reorder_point_units": 7000.0,
+    },
+    {
         "material_id": "MAT-CHEM-002",
         "description": "Speciality polymer additive",
         "plant": "Hamburg DC",

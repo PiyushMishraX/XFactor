@@ -978,4 +978,111 @@ no sample executions, no write endpoints.
 
 ---
 
+## 2026-11-22 — Session 9: Step 9 — Testing and End-to-End Validation
+
+### Starting point
+
+Session recovery found Step 8 complete (364 passed, 6 skipped) and Step 9 not
+started. The task was validation rather than new features: audit the 17 roadmap
+verification points, execute the Mumbai → Rotterdam pharmaceutical maritime
+scenario through approval and execution, run the ten required failure tests,
+fix critical errors, and write the final report.
+
+### Work completed
+
+1. **Live golden-path attempt.** Started the Mumbai → Rotterdam run through the
+   real API. The first attempt failed with
+   `InventoryRebalancingError: Target plant 'Rotterdam DC' does not hold material
+   'MAT-PHARMA-001'`. Fixed the seed data, then the retry failed on Gemini
+   `429 RESOURCE_EXHAUSTED` — `GenerateRequestsPerDayPerProjectPerModel-FreeTier`,
+   limit 20/day for `gemini-3.6-flash`, retry in ~14 h. No success was invented:
+   both runs (`EV-STEP9-MUMBAI-001/002`) remain recorded as genuine failures.
+2. **Deterministic end-to-end proof.** Added
+   `tests/test_e2e_mumbai_rotterdam.py`, which runs the real graph, agents and
+   deterministic tools with a scripted Gemini. It asserts all five agent markers
+   execute once, risk ≥ 60, SH001/SUP001 are linked, at least three scenarios
+   are produced, screening passes, the inventory shortage is covered, the graph
+   pauses for a Director, resumes, and produces an approved execution with three
+   `[SIMULATED]` actions; a replay raises `ApprovalConflictError` with an
+   unchanged action count.
+3. **Critical defect found by that test — inventory transfer dropped.**
+   On the scenario-planning path the transfer total lived only on the transient
+   `inventory` object, so the audit request, screening input, proposal snapshot
+   and execution plan omitted the transfer entirely. Added
+   `ScenarioPlan.inventory_transfer_units`, populated it in the Scenario
+   Planning agent, and added fallbacks in `_audit_request`, `_screening_update`
+   and `build_proposal_snapshot`. The test now asserts the `INVENTORY_TRANSFER`
+   action exists.
+4. **Data defect — missing destination position.** Added the eighth
+   `SimulatedSAPConnector` row (`MAT-PHARMA-001` at Rotterdam DC:
+   3 000/6 000/7 000) and corrected the "seven positions" wording.
+5. **Failure-test audit.** Mapped all ten required failure cases to existing or
+   new tests. Added a live-connector timeout test (`httpx.ReadTimeout`, three
+   attempts, clear `IntegrationRequestError`) and a dashboard database-outage
+   test (`OperationalError` → `503`).
+6. **Live approval and execution.** Completed the previously paused
+   `EV-UI-VERIFY-003`: 401 without a token, 403 for a Manager on a high-impact
+   re-route, 409 for a stale/duplicate decision, Director approval, three
+   simulated executions, a duplicate decision refused, `workflow_runs`
+   refreshed (`execution_count` 3, `error_count` 0). The checkpoint created
+   before three backend restarts resumed successfully, proving PostgreSQL
+   checkpoint persistence.
+7. **Browser verification.** With the fixed backend and a Director credential
+   supplied through the process environment, verified the Overview KPIs,
+   Inventory (including the new Rotterdam DC row), the Approval Center with a
+   completed and executed proposal, and Audit History with approval/execution
+   records.
+8. **Report.** Wrote `backend/docs/validation-report.md` with the 17-item audit
+   table, live journal, failure matrix, security checks, test results, known
+   limitations and deployment readiness.
+
+### Design decisions
+
+- The deterministic E2E test is the authoritative proof of the golden path while
+  the free-tier quota blocks live runs; the live evidence that does exist is
+  reported separately and precisely.
+- Failures stay in the shared database unless deletion is explicitly approved.
+- The inventory transfer is carried on the plan rather than re-derived from
+  transient agent objects, so every downstream consumer sees one number.
+
+### Dependencies installed
+
+- None.
+
+### Tests and results
+
+| Check | Result |
+| --- | --- |
+| `python -m pytest` (full backend suite, from `backend/`) | ✅ **368 passed, 6 skipped in 12.34s** (374 collected) |
+| `pytest tests/test_e2e_mumbai_rotterdam.py` | ✅ 2 passed |
+| `pytest tests/test_integrations.py -k timeout` | ✅ 1 passed |
+| `pytest tests/test_dashboard.py -k unavailable` | ✅ 1 passed |
+| `npm run build` | ✅ passes |
+| `npm run lint` | ✅ 0 errors, 2 pre-existing warnings |
+| Live Gemini Mumbai run | ⛔ blocked by daily quota; recorded honestly |
+
+### Problems encountered and their solutions
+
+1. **Rotterdam DC held no `MAT-PHARMA-001`** → added the eighth simulated
+   inventory position and updated the docs.
+2. **Gemini daily quota** → switched to a deterministic E2E test plus the
+   already-completed live approval/execution; documented the limit and the
+   ~14 h reset.
+3. **Scenario-path transfer lost** → carried `inventory_transfer_units` on the
+   plan with downstream fallbacks.
+4. **Suite run from the repository root skipped 8 PostgreSQL tests** because
+   `env_file=".env"` is CWD-relative → run pytest from `backend/`.
+5. **A credential-redaction command failed once and printed a connection URL.**
+   The value is not repeated anywhere; only environment-variable names are
+   documented.
+
+### Remaining work
+
+- **Step 10 (Deployment and Hackathon Demonstration)** is next and was
+  deliberately not started. Pending explicit approval: persisting an approver
+  credential and deleting the four failed verification rows. SAP writes remain
+  deferred until proposals carry shipment/plant identifiers.
+
+---
+
 _All progress files updated at the end of this milestone._

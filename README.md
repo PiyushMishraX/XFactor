@@ -227,47 +227,49 @@ npm run build
 
 ## Current status
 
-**Phase: Step 8 — Agent Activity and Decision Dashboard (complete).**
+**Phase: Step 9 — Testing and End-to-End Validation (complete).**
 
-Steps 0–7 delivered the platform skeleton, Gemini reasoning, the deterministic
+Steps 0–8 delivered the platform skeleton, Gemini reasoning, the deterministic
 tools, all five specialised agents, the compiled LangGraph supervisor, the
 auditable collaboration layer, the authenticated approval and execution path,
-and the SAP read/write boundary.
+the SAP read/write boundary and the control-tower dashboard.
 
-Step 8 adds the control tower:
+Step 9 validated the whole product without adding features:
 
-- a **`workflow_runs` projection** that records every supervisor run (failures
-  included) and is refreshed after an authenticated decision; the LangGraph
-  checkpoint remains the source of truth for resuming;
-- a **read-only `/api/dashboard/*` API** for overview KPIs, run history, one
-  run's full state, disruptions, seeded shipments and SAP inventory provenance;
-- **eight pages** — Overview, Disruption Monitoring, Agent Activity, Scenario
-  Comparison, Approval Center, Shipment Management, Inventory Management and
-  Audit History — each with loading, error and empty states;
-- an **Agent Activity** view with the workflow id, active disruption, supervisor
-  decision trail, five agent executions, current task, tools invoked, structured
-  results, handoffs, replanning, progress, errors/retries and a React Flow graph
-  drawn from the recorded executions;
-- **Scenario Comparison** with route, delivery time, cost, risk, inventory
-  impact, feasibility and compliance; and an **Approval Center** with proposed
-  action, cost/risk impact, per-agent validations, decision controls and history;
-- a responsive dark-navy control-tower theme with a numbered sidebar.
+- a **deterministic end-to-end test** drives the Mumbai → Rotterdam
+  pharmaceutical maritime disruption through all five agents, deterministic
+  calculations, the approval interrupt, a Director decision and three labelled
+  `[SIMULATED]` executions, and proves a replay is refused;
+- **live approval and execution** were completed on a recorded workflow
+  (`EV-UI-VERIFY-003`): `401`/`403`/`409` boundaries, Director approval,
+  idempotent execution and a refreshed `workflow_runs` row;
+- **checkpoint persistence** was proven by approving a run created before
+  several backend restarts;
+- **failure handling** is covered for Gemini unavailability/quota, HTTP timeout,
+  invalid model output, missing shipment, no viable route, insufficient
+  inventory, compliance violation, rejection, duplicate execution and database
+  outage;
+- **three defects were found and fixed**: the scenario path never passed the
+  inventory transfer to audit/approval/execution, the Rotterdam DC pharma
+  inventory position was missing, and three paths had no tests.
 
-The dashboard recomputes no verdict and contains no sample agent activity. Two
-verification runs (`EV-UI-VERIFY-001/002`) failed on live Gemini `503`/`429`
-quota, so populated *successful* Scenario Comparison and Approval Center views
-were not exercised in a browser; the failure-path UI and every other page were.
-See [backend/docs/dashboard.md](backend/docs/dashboard.md) for the details.
+A live Mumbai replay was blocked by the Gemini free-tier daily quota (`429`,
+20 requests/day for `gemini-3.6-flash`); the failed runs are recorded honestly.
+See [backend/docs/validation-report.md](backend/docs/validation-report.md) for
+the full 17-point audit, failure matrix and limitations.
 
-Backend suite: **364 passed, 6 skipped** (the skips are the opt-in
-`RUN_LIVE_GEMINI=1` tests). Frontend build and lint pass.
+Backend suite: **368 passed, 6 skipped** (the skips are the opt-in
+`RUN_LIVE_GEMINI=1` tests; run pytest from `backend/`). Frontend build and lint
+pass.
 
-The next step is **Step 9 — Testing and End-to-End Validation** (not started).
+The next step is **Step 10 — Deployment and Hackathon Demonstration**
+(not started).
 
 Workflow details: [backend/docs/workflow.md](backend/docs/workflow.md),
 [backend/docs/collaboration.md](backend/docs/collaboration.md),
 [backend/docs/approval-and-execution.md](backend/docs/approval-and-execution.md),
-[backend/docs/sap-integration.md](backend/docs/sap-integration.md) and
-[backend/docs/dashboard.md](backend/docs/dashboard.md).
+[backend/docs/sap-integration.md](backend/docs/sap-integration.md),
+[backend/docs/dashboard.md](backend/docs/dashboard.md) and
+[backend/docs/validation-report.md](backend/docs/validation-report.md).
 See [PROJECT_PROGRESS.md](PROJECT_PROGRESS.md) for the live status and
 [DEVELOPMENT_ROADMAP.txt](DEVELOPMENT_ROADMAP.txt) for the full roadmap.

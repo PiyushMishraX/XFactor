@@ -285,45 +285,68 @@ Derived from `DEVELOPMENT_ROADMAP.txt`. Statuses:
 
 ---
 
-## STEP 9 — Testing and End-to-End Validation
+## STEP 9 — Testing and End-to-End Validation ✅
 
-- [ ] End-to-end scenario: Mumbai → Rotterdam pharmaceutical maritime disruption
-- [ ] Verify disruption ingestion
-- [ ] Verify Disruption Sensing Agent
-- [ ] Verify risk scoring
-- [ ] Verify supervisor delegation
-- [ ] Verify Scenario Planning Agent
-- [ ] Verify Rerouting & Logistics Agent
-- [ ] Verify Inventory Rebalancing Agent
-- [ ] Verify Compliance & Audit Agent
-- [ ] Verify agent collaboration
-- [ ] Verify autonomous replanning
-- [ ] Verify human approval
-- [ ] Verify workflow checkpointing
-- [ ] Verify authorised execution
-- [ ] Verify SAP connector
-- [ ] Verify database persistence
-- [ ] Verify audit history
-- [ ] Verify frontend updates
-- [ ] Failure test: Gemini API unavailable
-- [ ] Failure test: external API timeout
-- [ ] Failure test: invalid LLM output
-- [ ] Failure test: missing shipment data
-- [ ] Failure test: no alternative routes
-- [ ] Failure test: insufficient inventory
-- [ ] Failure test: compliance violation
-- [ ] Failure test: manager rejects proposal
-- [ ] Failure test: duplicate execution request
-- [ ] Failure test: database connection failure
-- [ ] Add unit tests
-- [ ] Add integration tests
-- [ ] Add end-to-end workflow tests
-- [ ] Fix critical errors
-- [ ] Validate security boundaries
-- [ ] Check logging and exception handling
-- [ ] Verify workflow state persists
-- [ ] Verify rejected actions are never executed
-- [ ] Generate final report (features, limitations, results, bugs, readiness)
+> The Mumbai → Rotterdam golden path is verified end to end by a deterministic
+> E2E test (all five agents, approval pause, Director approval, three labelled
+> `[SIMULATED]` executions, replay refused). A live replay through Gemini was
+> attempted three times and blocked by the free-tier daily quota
+> (`429`, 20 requests/day for `gemini-3.6-flash`); the two prior live runs are
+> recorded as genuine failures and the successful live approval/execution proof
+> comes from `EV-UI-VERIFY-003`, which completed and executed after the quota
+> window. Details: `backend/docs/validation-report.md`.
+
+- [x] End-to-end scenario: Mumbai → Rotterdam pharmaceutical maritime disruption
+- [x] Verify disruption ingestion
+- [x] Verify Disruption Sensing Agent
+- [x] Verify risk scoring
+- [x] Verify supervisor delegation
+- [x] Verify Scenario Planning Agent
+- [x] Verify Rerouting & Logistics Agent
+- [x] Verify Inventory Rebalancing Agent
+- [x] Verify Compliance & Audit Agent
+- [x] Verify agent collaboration
+- [x] Verify autonomous replanning
+- [x] Verify human approval
+- [x] Verify workflow checkpointing
+- [x] Verify authorised execution
+- [x] Verify SAP connector
+- [x] Verify database persistence
+- [x] Verify audit history
+- [x] Verify frontend updates
+- [x] Failure test: Gemini API unavailable
+- [x] Failure test: external API timeout
+- [x] Failure test: invalid LLM output
+- [x] Failure test: missing shipment data
+- [x] Failure test: no alternative routes
+- [x] Failure test: insufficient inventory
+- [x] Failure test: compliance violation
+- [x] Failure test: manager rejects proposal
+- [x] Failure test: duplicate execution request
+- [x] Failure test: database connection failure
+- [x] Add unit tests
+- [x] Add integration tests
+- [x] Add end-to-end workflow tests
+- [x] Fix critical errors
+- [x] Validate security boundaries
+- [x] Check logging and exception handling
+- [x] Verify workflow state persists
+- [x] Verify rejected actions are never executed
+- [x] Generate final report (features, limitations, results, bugs, readiness)
+
+**Step 9 defects found and fixed**
+
+- [x] Scenario-path inventory transfer never reached the audit/proposal/execution
+      plan (only the standalone rebalancing node was read) — carried on
+      `ScenarioPlan.inventory_transfer_units` with fallbacks in the workflow and
+      proposal builder
+- [x] `Rotterdam DC` held no `MAT-PHARMA-001` position, so the Mumbai → Rotterdam
+      rebalancing target failed — added the eighth seed inventory row
+- [x] No test covered the scenario path E2E, an HTTP timeout, or a database outage
+      in the dashboard API — three tests added
+
+**Test totals:** 368 passed, 6 skipped (`pytest` from `backend/`). Full report:
+`backend/docs/validation-report.md`.
 
 ---
 

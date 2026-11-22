@@ -478,3 +478,26 @@ def test_live_connector_retries_retryable_status_then_succeeds() -> None:
     assert attempts["count"] == 2
     assert services[0].carrier == "Maersk"
     assert services[0].provenance.is_mock is False
+
+
+def test_live_connector_retries_a_timeout_then_reports_it_clearly() -> None:
+    from app.integrations.base import DEFAULT_MAX_ATTEMPTS, IntegrationRequestError
+    from app.integrations.carriers import LiveCarrierConnector
+
+    attempts = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["count"] += 1
+        raise httpx.ReadTimeout("provider timed out", request=request)
+
+    client = HttpJsonClient(
+        connector_name="carriers",
+        base_url="https://provider.test",
+        backoff_seconds=0.0,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    connector = LiveCarrierConnector(settings=_blank(), client=client)
+
+    with pytest.raises(IntegrationRequestError, match="failed after"):
+        connector.list_services()
+    assert attempts["count"] == DEFAULT_MAX_ATTEMPTS

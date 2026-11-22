@@ -3,7 +3,7 @@
 > Update this file immediately after **every** meaningful implementation milestone.
 > Never rely on conversation history to remember completed work.
 
-_Last updated: 2026-11-22 (Step 8 complete)_
+_Last updated: 2026-11-22 (Step 9 complete)_
 
 ---
 
@@ -26,10 +26,10 @@ React (Vite) frontend.
 
 | Field | Value |
 | --- | --- |
-| Current phase | **Step 8 — Agent Activity and Decision Dashboard** |
-| Status | ✅ **Complete and verified** (see the live-Gemini limitation in §11 item 17) |
-| Overall completion (estimate) | **~91%** (Steps 0–8 of 11 roadmap steps) |
-| Next step | **Step 9 — Testing and End-to-End Validation** |
+| Current phase | **Step 9 — Testing and End-to-End Validation** |
+| Status | ✅ **Complete and verified** (see the live-Gemini quota limitation in §11 items 17 and 20) |
+| Overall completion (estimate) | **~95%** (Steps 0–9 of 11 roadmap steps) |
+| Next step | **Step 10 — Deployment and Hackathon Demonstration** |
 
 ---
 
@@ -409,7 +409,7 @@ mandatory human-approval evidence. No live SAP tenant is connected —
   rejection reports only the status code.
 - **Read interface.** Shipment, purchase-order, supplier, inventory and material
   reads via `list_*` / `get_*`. `SimulatedSAPConnector` returns five suppliers, ten
-  shipments, five materials, seven inventory rows and four purchase orders. The
+  shipments, five materials, eight inventory rows and four purchase orders. The
   connector still exposes no write methods (regression-tested).
 - **Authorized writes.** Three validated request types — shipment plan update,
   inventory transfer (`units > 0`, source ≠ target) and operational change. Every
@@ -490,6 +490,41 @@ states.
   two `EV-UI-VERIFY-*` failed runs are genuine recordings and remain in the
   shared database.
 
+### Step 9 — Testing and End-to-End Validation ✅
+
+Step 9 added no product features. It audited the finished product against the
+17 roadmap verification points, executed the golden path and the ten required
+failure cases, found and fixed three defects, and produced a validation report.
+
+| Area | Result |
+| --- | --- |
+| Mumbai → Rotterdam golden path | ✅ Deterministic E2E test: all five agents run once, risk ≥ 60, SH001/SUP001 linked, ≥ 3 scenarios, screening passes, inventory shortage covered, pause for Director, resume, approval, three `[SIMULATED]` actions, replay refused (`ApprovalConflictError`) |
+| Live golden path | ⛔ Blocked by Gemini free-tier daily quota (`429`, 20 req/day, `gemini-3.6-flash`); prior live failure `EV-STEP9-MUMBAI-002` recorded honestly |
+| Live approval + execution | ✅ `EV-UI-VERIFY-003` approved by a Director and executed (3 simulated actions, `execution_count` 3, `error_count` 0) after restarts, proving checkpoint persistence |
+| Security boundaries | ✅ Unauthenticated `401`, Manager-on-high-impact `403`, stale version and duplicate decision `409`, unconfigured credentials `503`; no secret or token in logs or payloads |
+| Persistence | ✅ PostgreSQL checkpoint tables survive backend restart; `workflow_runs` reflects the decision and execution |
+| Frontend | ✅ Populated success views (Scenario Comparison, Approval Center with a real completed and executed run, Audit History) browser-verified; build and lint pass |
+| Failure tests | ✅ Gemini unavailable, HTTP timeout, invalid model output, missing shipment, no viable route, insufficient inventory, compliance violation, rejection, duplicate execution, database outage |
+| Defects fixed | 3 (scenario-path inventory transfer dropped; missing Rotterdam DC pharma seed row; untested scenario path / timeout / DB outage) |
+
+- **Critical fix — inventory transfer in the scenario path.** When Scenario
+  Planning composes Rerouting and Inventory internally (the real workflow path),
+  the transfer total existed only on the transient `inventory` object, so the
+  audit, approval proposal and execution plan silently omitted the transfer.
+  The total is now carried on `ScenarioPlan.inventory_transfer_units` with
+  fallbacks in `_audit_request`, `_screening_update` and
+  `build_proposal_snapshot`.
+- **Data fix — Rotterdam DC pharma position.** `SimulatedSAPConnector` now seeds
+  eight positions including `MAT-PHARMA-001` at Rotterdam DC
+  (3 000 on hand / 6 000 safety / 7 000 reorder), so the destination of the
+  Mumbai → Rotterdam rebalance exists. Docs updated from "seven" to "eight".
+- **New tests.** `tests/test_e2e_mumbai_rotterdam.py` (2), a timeout test in
+  `tests/test_integrations.py`, and a dashboard `503` test in
+  `tests/test_dashboard.py`. Full suite **368 passed, 6 skipped**.
+- **Report.** `backend/docs/validation-report.md` records the 17-item audit, the
+  live run journal, the failure matrix, security checks, known limitations and
+  deployment readiness.
+
 ---
 
 ## 4. Partially completed steps
@@ -510,7 +545,7 @@ None.
 | 6 | Human-in-the-loop and authorized execution | ✅ Complete (verified) |
 | 7 | SAP integration | ✅ Complete (verified; simulated adapters, no live tenant) |
 | 8 | Agent Activity and Decision dashboard | ✅ Complete (verified; see §11 item 17) |
-| 9 | Testing and end-to-end validation | Not started |
+| 9 | Testing and end-to-end validation | ✅ Complete (verified; live Mumbai replay blocked by Gemini quota — §11 item 20) |
 | 10 | Deployment and hackathon demonstration | Not started |
 
 ---
@@ -793,6 +828,21 @@ None.
 | `frontend/src/index.css` | Full control-tower theme rewrite (~1,300 lines) and responsive breakpoints |
 | `frontend/package.json` | Added `@xyflow/react` 13.0.2 |
 
+### Created / modified — Step 9 (testing and validation)
+
+| File | Change |
+| --- | --- |
+| `backend/tests/test_e2e_mumbai_rotterdam.py` | New: two deterministic E2E tests (golden path through all five agents and the approval interrupt; approval, execution, `[SIMULATED]` labels and replay refusal) |
+| `backend/tests/test_integrations.py` | Added a `httpx.ReadTimeout` retry/exhaustion test |
+| `backend/tests/test_dashboard.py` | Added a database-outage `503` test |
+| `backend/app/schemas/scenario_schemas.py` | Added `ScenarioPlan.inventory_transfer_units` |
+| `backend/app/agents/scenario_planning.py` | Carries the composed inventory total on the plan |
+| `backend/app/orchestration/workflow.py` | `_audit_request` and `_screening_update` fall back to the plan's transfer total |
+| `backend/app/orchestration/approvals.py` | `build_proposal_snapshot` falls back to the plan's transfer total |
+| `backend/app/integrations/sap.py` | Added the eighth simulated inventory row (Rotterdam DC pharma) |
+| `backend/docs/sap-integration.md` | "seven" → "eight" inventory positions |
+| `backend/docs/validation-report.md` | New: Step 9 report (17-item audit, live journal, failure matrix, security, limitations, readiness) |
+
 ### Created / modified — frontend (Step 6)
 
 | File | Change |
@@ -962,7 +1012,12 @@ npm run dev
 
 | Test | Command | Result |
 | --- | --- | --- |
-| Backend unit tests (full suite) | `..\.venv\Scripts\python.exe -m pytest` (in `backend/`) | ✅ **370 tests collected; 364 passed, 6 skipped in 9.74s** (the 5 opt-in `RUN_LIVE_GEMINI=1` agent tests + 1 live supervisor test skip by default; repository tests skip when PostgreSQL is down) |
+| Backend unit tests (full suite) | `..\.venv\Scripts\python.exe -m pytest` (in `backend/`) | ✅ **374 collected; 368 passed, 6 skipped in 12.34s** (the 5 opt-in `RUN_LIVE_GEMINI=1` agent tests + 1 live supervisor test skip by default; repository tests skip when PostgreSQL is down) |
+| Step 9 Mumbai → Rotterdam E2E | `pytest tests/test_e2e_mumbai_rotterdam.py` | ✅ **2 passed** (golden path through all five agents, approval interrupt, approval + three `[SIMULATED]` executions + duplicate refusal; scenario-path inventory transfer asserted) |
+| Step 9 timeout failure test | `pytest tests/test_integrations.py -k timeout` | ✅ **1 passed** (`httpx.ReadTimeout` retried `DEFAULT_MAX_ATTEMPTS` times, surfaced as `IntegrationRequestError`) |
+| Step 9 database-failure test | `pytest tests/test_dashboard.py -k unavailable` | ✅ **1 passed** (SQLAlchemy `OperationalError` → `503` "The workflow database is unavailable.") |
+| Step 9 live verification | `POST /api/orchestration/workflows` (Mumbai → Rotterdam) | ⛔ Blocked by Gemini free-tier daily quota (`429`, 20 requests/day); `EV-STEP9-MUMBAI-002` recorded as a genuine failure. `EV-UI-VERIFY-003` later approved and executed after the quota window |
+| Step 9 live approval + execution | `POST /api/approvals/EV-UI-VERIFY-003/decision` + `/execution` | ✅ 401/403/409 paths, Director approval, 3 simulated actions, duplicate decision refused, `workflow_runs` refreshed (`execution_count` 3, `error_count` 0) |
 | Step 8 dashboard tests | `pytest tests/test_dashboard.py` | ✅ **12 passed** (summary derivation, one-row upsert, ordering/status filter, disruption detail, JSON-safe interrupt stripping, overview counts, run/detail endpoints incl. 404, shipment and inventory payloads, run recorded on workflow start, dashboard routes mounted) |
 | Step 7 SAP integration tests | `pytest tests/test_sap_integration.py` | ✅ **37 passed** (four API profiles and env selection, undeclared-capability refusal, OAuth2 client-credentials form + token caching, secret never echoed in an error body, no token/secret in logs, header redaction, bearer replaces `x-api-key`, material master reads, profile-aware read paths, 404 → `None`, read connector has no write methods, request validation, approval evidence from approve/reject, keyword-only evidence, deterministic simulated writes for all three write types, literal idempotency key, fail-closed write permission, live writer requires credentials, read/write scope and permission separation, rejected vs failed classification, `Retry-After` honoured, approved-vs-rejected end to end) |
 | Step 6 approval + execution tests | `pytest tests/test_approvals.py` | ✅ **50 passed** (proposal versioning, credential parsing, authentication and role hierarchy, bearer parsing, legacy and Step 6 payloads, approve/reject identity + timestamp + history, bounded modification loop, execution plan/keys/labelling/replay/refusal, partial + failed reports, live adapter via `httpx.MockTransport`, repository semantics in memory and SQLite, API 401/403/409/503 including approve → execute → duplicate prevention and the modification round-trip) |
@@ -1104,55 +1159,53 @@ npm run dev
     roughly 498×570 and screenshots occasionally reported
     `NATIVE_BROWSER_VIEWPORT_UNAVAILABLE`; verification therefore relied on
     accessibility snapshots plus a few successful screenshots. The CSS defines
-    breakpoints at 1180/1024/760/480 px, but a full desktop-width visual pass
-    belongs to Step 9.
+    breakpoints at 1180/1024/760/480 px. Step 9 completed a populated
+    success-path browser pass; a full desktop-width visual sweep is deferred to
+    the Step 10 demo preparation.
+20. **Live Mumbai → Rotterdam replay is blocked by the Gemini daily quota.**
+    The probe returned `429 RESOURCE_EXHAUSTED`,
+    `GenerateRequestsPerDayPerProjectPerModel-FreeTier`, limit 20/day for
+    `gemini-3.6-flash`, retry in ~14 h. A full workflow needs ~5 LLM calls.
+    The golden path is therefore proven by the deterministic E2E test and by
+    the `EV-UI-VERIFY-003` live approval/execution, not by a fresh live Mumbai
+    run. `EV-STEP9-MUMBAI-002` remains recorded as a genuine failed run. Any
+    demo must account for this limit (rotation or a quota-backed key).
+21. **No approver credential is persisted in `backend/.env`.** The live
+    approval verification used a credential supplied through the process
+    environment at startup. `APPROVER_CREDENTIALS` is still unset in the file, so
+    the approval API fails closed with `503` after a plain restart. Persisting a
+    real approver token is a credential decision that needs explicit approval.
+22. **Four failed verification rows remain in the shared Aiven database.**
+    `EV-UI-VERIFY-001/002` (Gemini `503`/`429`) and
+    `EV-STEP9-MUMBAI-001/002` (missing seed row, then quota) are genuine
+    recordings and are displayed honestly. Deleting rows from a shared database
+    is destructive and was not authorised; it remains a pending data-cleanup
+    decision.
 
 ---
 
 ## 12. Exact next action
 
-**Start Step 9 — Testing and End-to-End Validation.**
+**Start Step 10 — Deployment and Hackathon Demonstration** (not started).
 
-Step 8 is complete and verified (see §3, §10 and `backend/docs/dashboard.md`):
-the `workflow_runs` registry records every run, a read-only `/api/dashboard/*`
-API serves the recorded state, and eight control-tower pages render it with
-loading, error and empty states. No new decision logic was introduced. Step 9
-should now verify the whole product end to end rather than add features:
+Step 9 is complete and verified (see §3, §10 and
+`backend/docs/validation-report.md`). The product's golden path, approval and
+execution, persistence, security boundaries and failure handling were all
+exercised, and three defects found during the audit were fixed. Step 10 should
+package what exists rather than add decision logic:
 
-1. **Golden path** — Mumbai → Rotterdam pharmaceutical maritime disruption
-   through ingest → sensing → risk → supervisor → scenario planning → rerouting
-   → inventory → compliance → approval → authorised simulated execution.
-2. **Failure tests** — Gemini unavailable/quota (already observed: `503`/`429`),
-   external API timeout, invalid agent output, missing route, no feasible
-   recovery — each ending in an honest status, never a fabricated success.
-3. **Browser completion** — the populated successful Scenario Comparison and
-   Approval Center views that Gemini quota blocked on 2026-11-22, plus a
-   desktop-width visual pass.
-4. **Data cleanup decision** — whether to remove the `EV-UI-VERIFY-*` failed
-   runs from the shared database (destructive; needs explicit approval).
+1. **Containers** — backend and frontend Dockerfiles, Docker Compose including
+   PostgreSQL, env-var wiring, persistent checkpoint storage and health checks.
+2. **Demo readiness** — one complete Red Sea / Mumbai → Rotterdam scenario that
+   shows detection, supervisor delegation, all five agents, tool use,
+   deterministic calculations, collaboration, scenario comparison, compliance
+   rejection and replanning, and human approval.
+3. **Quota plan** — the Gemini free tier allows 20 requests/day per model and a
+   demo run costs ~5; budget or rotate keys before the live demo.
 
-Deferred to a later step (recorded in §11): invoking SAP writes from the
-approval/execution path once proposals carry shipment and plant identifiers.
-
-**Credentials available (recorded 2026-11-22) — do not re-ask:**
-
-1. **Gemini API key:** configured and verified live (`GEMINI_MODEL=gemini-3.5-flash`).
-2. **PostgreSQL:** the live managed (Aiven) `DATABASE_URL` is configured and
-   seeded with demo reference data; the supervisor's Postgres checkpointer uses it
-   and the `approval_requests` table is created on startup.
-3. **Approver credentials:** not configured. `APPROVER_CREDENTIALS` must be set
-   before any approval endpoint will accept a request (otherwise `503`); this is
-   the intended fail-closed behaviour and needs nothing from the developer unless
-   a manual demo is requested.
-4. **External-data API credentials:** none. This is expected — every Step 2
-   connector falls back to clearly labelled simulated data, which is the
-   deliberate design. No action is required from the developer.
-5. **SAP credentials:** none. `SAP_USE_MOCK=true` and `SAP_WRITE_ENABLED=false`
-   stay in effect, so both SAP reads and writes use the labelled simulated
-   adapters; no action is required unless live sandbox credentials are supplied
-   (then set `SAP_BASE_URL`, `SAP_CLIENT_ID`/`SAP_CLIENT_SECRET`, optionally
-   `SAP_AUTH_URL`, and `SAP_USE_MOCK=false`, and confirm the paths in
-   `sap_profiles.py`).
+Deferred and still needing explicit approval (recorded in §11): persisting an
+approver credential (§21) and deleting the four failed verification rows (§22).
+SAP writes remain deferred until proposals carry shipment/plant identifiers.
 
 ---
 

@@ -224,6 +224,9 @@ class ScenarioPlanningAgent:
             inventory_impact=inventory.explanation if inventory else "",
             inventory_shortage_after=inventory.shortage_after if inventory else None,
             inventory_can_cover_disruption=bool(inventory and inventory.shortage_after <= 0),
+            inventory_transfer_units=(
+                inventory.total_transferred_units if inventory else 0.0
+            ),
             cost_delta_vs_current_usd=(
                 round(recommended.total_cost_usd - incumbent.total_cost_usd, 2)
                 if recommended and incumbent
