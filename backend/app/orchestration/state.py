@@ -29,6 +29,14 @@ from typing import Annotated, Any, Dict, List, Optional, TypedDict
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.audit_schemas import AuditVerdict
+from app.schemas.collaboration_schemas import (
+    AgentExecution,
+    AgentTask,
+    ReplanningRecord,
+    ScenarioHistoryEntry,
+    ScenarioScreening,
+    ToolInvocation,
+)
 from app.schemas.disruption_schemas import DisruptionReport, EvidenceItem
 from app.schemas.scenario_schemas import ScenarioRequest
 from app.tools.approval import ApprovalPolicy
@@ -69,6 +77,7 @@ STATUS_COMPLETED = "completed"
 STATUS_AWAITING_APPROVAL = "awaiting_approval"
 STATUS_NO_ACTION = "no_action_required"
 STATUS_NO_FEASIBLE_RECOVERY = "no_feasible_recovery"
+STATUS_NO_COMPLIANT_RECOVERY = "no_compliant_recovery"
 STATUS_APPROVAL_REJECTED = "approval_rejected"
 STATUS_ITERATION_LIMIT = "iteration_limit_reached"
 STATUS_FAILED = "failed"
@@ -196,6 +205,31 @@ class RecoveryRecommendation(BaseModel):
     evidence: List[EvidenceItem] = Field(default_factory=list)
     iterations: int = Field(default=0, description="Agent executions performed.")
 
+    # --- Collaboration record (Step 5) ----------------------------------
+    tasks: List[AgentTask] = Field(
+        default_factory=list, description="Every task the supervisor issued, in order."
+    )
+    agent_executions: List[AgentExecution] = Field(
+        default_factory=list, description="Every execution attempt, with its tool calls."
+    )
+    tool_calls: List[ToolInvocation] = Field(
+        default_factory=list, description="Flat, ordered list of every recorded tool call."
+    )
+    scenario_screening: Optional[ScenarioScreening] = Field(
+        default=None, description="Deterministic evaluation of the final scenario set."
+    )
+    scenario_history: List[ScenarioHistoryEntry] = Field(
+        default_factory=list, description="Scenario plans preserved through replanning."
+    )
+    replanning: List[ReplanningRecord] = Field(
+        default_factory=list, description="Every replanning round and what triggered it."
+    )
+    replanning_rounds: int = Field(default=0, description="Revision rounds actually performed.")
+    skipped_agents: List[str] = Field(
+        default_factory=list,
+        description="Agents whose task could not run because an integration was unavailable.",
+    )
+
 
 # ---------------------------------------------------------------------------
 # LangGraph state
@@ -237,6 +271,13 @@ class WorkflowState(TypedDict, total=False):
     attempted_scenarios: Annotated[List[str], operator.add]
     attempts: Annotated[Dict[str, int], _merge_attempts]
 
+    # --- Collaboration bookkeeping (Step 5) -----------------------------
+    tasks: Annotated[List[Dict[str, Any]], operator.add]
+    agent_executions: Annotated[List[Dict[str, Any]], operator.add]
+    scenario_history: Annotated[List[Dict[str, Any]], operator.add]
+    replanning: Annotated[List[Dict[str, Any]], operator.add]
+    skipped_agents: Annotated[List[str], operator.add]
+
     # --- Control -------------------------------------------------------
     step: int
     iteration: int
@@ -246,3 +287,8 @@ class WorkflowState(TypedDict, total=False):
     failed_agent: Optional[str]
     status: str
     recommendation: Optional[Dict[str, Any]]
+
+    # --- Collaboration control (Step 5) ---------------------------------
+    scenario_screening: Optional[Dict[str, Any]]
+    scenario_revision: Optional[Dict[str, Any]]
+    replan_rounds: int

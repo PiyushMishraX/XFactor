@@ -188,24 +188,24 @@ Derived from `DEVELOPMENT_ROADMAP.txt`. Statuses:
 
 ---
 
-## STEP 5 — Multi-Agent Collaboration and Autonomous Replanning
+## STEP 5 — Multi-Agent Collaboration and Autonomous Replanning ✅
 
-- [ ] Dynamic task delegation
-- [ ] Structured inter-agent communication
-- [ ] Shared workflow state
-- [ ] Agent result evaluation
-- [ ] Feedback loops
-- [ ] Conditional replanning
-- [ ] Tool selection
-- [ ] Failure recovery
-- [ ] Scenario comparison
-- [ ] Bounded autonomous iteration (max iteration limits, no infinite loops)
-- [ ] Track agent execution history
-- [ ] Record tool calls and results
-- [ ] Handle unavailable tools
-- [ ] Track why the supervisor selected each agent
-- [ ] Preserve previous scenario results when replanning
-- [ ] No fabricated agent messages — interactions must reflect executed functions
+- [x] Dynamic task delegation
+- [x] Structured inter-agent communication
+- [x] Shared workflow state
+- [x] Agent result evaluation
+- [x] Feedback loops
+- [x] Conditional replanning
+- [x] Tool selection
+- [x] Failure recovery
+- [x] Scenario comparison
+- [x] Bounded autonomous iteration (max iteration limits, no infinite loops)
+- [x] Track agent execution history
+- [x] Record tool calls and results
+- [x] Handle unavailable tools
+- [x] Track why the supervisor selected each agent
+- [x] Preserve previous scenario results when replanning
+- [x] No fabricated agent messages — interactions must reflect executed functions
 
 ---
 
@@ -366,7 +366,7 @@ Derived from `DEVELOPMENT_ROADMAP.txt`. Statuses:
 - [x] PostgreSQL credentials configured (live managed instance, demo data seeded)
 - [x] SAP credentials available, otherwise clearly labelled mock mode
 - [x] Tests added for every major component
-- [ ] README updated after each major phase
+- [x] README updated after each major phase
 - [x] No secrets committed or exposed in frontend code
 - [ ] Human approval enforced before high-impact real-world actions
 
@@ -379,9 +379,9 @@ Derived from `DEVELOPMENT_ROADMAP.txt`. Statuses:
 | 0 — Project Initialization | ✅ Complete |
 | 1 — Gemini + Disruption Sensing Agent | ✅ Complete |
 | 2 — Tools + Deterministic Business Logic | ✅ Complete |
-| 3 — Remaining Four Agents | ⬜ Not started |
-| 4 — LangGraph Supervisor | ⬜ Not started |
-| 5 — Collaboration + Replanning | ⬜ Not started |
+| 3 — Remaining Four Agents | ✅ Complete |
+| 4 — LangGraph Supervisor | ✅ Complete |
+| 5 — Collaboration + Replanning | ✅ Complete |
 | 6 — Human-in-the-Loop + Execution | ⬜ Not started |
 | 7 — SAP Integration | ⬜ Not started |
 | 8 — Agent Activity Dashboard | ⬜ Not started |

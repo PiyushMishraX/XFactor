@@ -26,6 +26,24 @@ class ScenarioFeasibility(str, Enum):
     UNKNOWN = "Affordability unknown"
 
 
+class ScenarioRevision(BaseModel):
+    """Structured feedback asking the Scenario Planning Agent for a revised plan.
+
+    Step 5 uses this as the task payload when deterministic evaluation (or the
+    Compliance & Audit Agent) rejects an alternative: the rejected scenario ids
+    and carriers are excluded before the remaining alternatives are re-scored,
+    so the revision is driven by real validation results rather than a prompt.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    round: int = Field(ge=1, description="1-based revision round.")
+    rejected_scenario_ids: List[str] = Field(default_factory=list)
+    rejection_reasons: List[str] = Field(default_factory=list)
+    excluded_carriers: List[str] = Field(default_factory=list)
+    feedback: str = Field(default="", description="Human-readable reason for the revision.")
+
+
 class ScenarioRequest(BaseModel):
     """The disruption, the affected lane, and the analyses the agent should request."""
 
@@ -99,6 +117,14 @@ class ScenarioPlan(BaseModel):
     # --- Deltas of the recommendation against the incumbent option -------
     cost_delta_vs_current_usd: Optional[float] = None
     days_delta_vs_current: Optional[float] = None
+
+    # --- Revision provenance (Step 5) -----------------------------------
+    revision_round: int = Field(
+        default=0, ge=0, description="0 for a first plan, N for the N-th revision."
+    )
+    rejected_scenario_ids: List[str] = Field(
+        default_factory=list, description="Alternatives a revision excluded from this plan."
+    )
 
     # --- Provenance and data quality ------------------------------------
     evidence: List[EvidenceItem] = Field(default_factory=list)

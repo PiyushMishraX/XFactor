@@ -35,6 +35,7 @@ from app.services.supply_chain_repository import (
     SupplyChainRepository,
     SupplyChainSnapshot,
 )
+from app.utils.tool_recording import call_recorded
 
 logger = logging.getLogger(__name__)
 
@@ -188,20 +189,39 @@ class DisruptionSensingAgent:
         logger.info("Assessing disruption report %s from %s", event_id, report.source)
 
         analysis = self._analyse(report, event_id)
-        snapshot = self._repository.snapshot(
+        snapshot = call_recorded(
+            "supply_chain_repository.snapshot",
+            {
+                "shipment_ids": list(analysis.mentioned_shipment_ids),
+                "supplier_ids": list(analysis.mentioned_supplier_ids),
+                "locations": list(analysis.affected_locations),
+            },
+            self._repository.snapshot,
             shipment_ids=analysis.mentioned_shipment_ids,
             supplier_ids=analysis.mentioned_supplier_ids,
             locations=analysis.affected_locations,
+            summarise=lambda result: (
+                f"{len(result.shipments)} shipment(s), {len(result.suppliers)} supplier(s) "
+                f"validated"
+            ),
         )
 
         shipments: Sequence[ShipmentRef] = snapshot.shipments if analysis.is_supply_chain_disruption else ()
         suppliers: Sequence[SupplierRef] = snapshot.suppliers if analysis.is_supply_chain_disruption else ()
 
-        risk = compute_risk_score(
+        risk = call_recorded(
+            "risk_scoring.compute_risk_score",
+            {
+                "risk_factors": [factor.value for factor in analysis.risk_factors],
+                "shipments": len(shipments),
+                "suppliers": len(suppliers),
+            },
+            compute_risk_score,
             risk_factors=analysis.risk_factors,
             shipment_count=len(shipments),
             supplier_count=len(suppliers),
             is_supply_chain_disruption=analysis.is_supply_chain_disruption,
+            summarise=lambda result: f"score {result.score} ({result.severity.value})",
         )
 
         assessment = DisruptionAssessment(
@@ -248,10 +268,14 @@ class DisruptionSensingAgent:
 
     def _analyse(self, report: DisruptionReport, event_id: str) -> LLMAssessment:
         """Ask Gemini for the structured analysis and validate it."""
-        raw = self._gemini.generate_structured_json(
+        raw = call_recorded(
+            "gemini.generate_structured_json",
+            {"agent": "disruption_sensing"},
+            self._gemini.generate_structured_json,
             prompt=build_prompt(report),
             response_schema=LLM_ASSESSMENT_SCHEMA,
             system_instruction=SYSTEM_INSTRUCTION,
+            summarise=lambda result: "structured assessment returned",
         )
         try:
             return LLMAssessment.model_validate(raw)

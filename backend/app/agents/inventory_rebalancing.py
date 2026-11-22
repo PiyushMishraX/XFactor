@@ -34,6 +34,7 @@ from app.services.gemini_service import GeminiService
 from app.tools.base import round_units
 from app.tools.inventory import InventoryPosition, calculate_inventory_shortage
 from app.tools.safety_stock import calculate_safety_stock
+from app.utils.tool_recording import call_recorded
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +122,10 @@ class InventoryRebalancingAgent:
         target_plant, target_stock = self._select_target(request, holdings)
 
         safety_stock, safety_source = self._safety_stock_requirement(request, target_stock)
-        position = calculate_inventory_shortage(
+        position = call_recorded(
+            "inventory.calculate_inventory_shortage",
+            {"material_id": request.material_id, "plant": target_plant},
+            calculate_inventory_shortage,
             on_hand=target_stock[0],
             committed=request.committed,
             in_transit=request.in_transit,
@@ -129,6 +133,9 @@ class InventoryRebalancingAgent:
             safety_stock=float(safety_stock),
             product=request.material_id,
             warehouse=target_plant,
+            summarise=lambda result: (
+                f"shortage {result.shortage_units} unit(s) of {result.required_units} required"
+            ),
         )
 
         sources = [
@@ -236,12 +243,24 @@ class InventoryRebalancingAgent:
     ) -> Tuple[int, str]:
         """Derive the safety stock the plan must protect, and say where it came from."""
         if request.average_daily_demand > 0 and request.lead_time_days > 0:
-            calculated = calculate_safety_stock(
+            calculated = call_recorded(
+                "safety_stock.calculate_safety_stock",
+                {
+                    "material_id": request.material_id,
+                    "average_daily_demand": request.average_daily_demand,
+                    "lead_time_days": request.lead_time_days,
+                    "service_level_percent": request.service_level_percent,
+                },
+                calculate_safety_stock,
                 average_daily_demand=request.average_daily_demand,
                 lead_time_days=request.lead_time_days,
                 demand_std_dev=request.demand_std_dev,
                 lead_time_std_dev=request.lead_time_std_dev,
                 service_level_percent=request.service_level_percent,
+                summarise=lambda result: (
+                    f"safety stock {result.safety_stock_units} unit(s) at "
+                    f"{request.service_level_percent}% service level"
+                ),
             )
             return calculated.safety_stock_units, (
                 f"calculated by app.tools.safety_stock at a "
@@ -336,7 +355,10 @@ class InventoryRebalancingAgent:
         improvement: float,
     ) -> LLMRebalancingNarrative:
         """Ask Gemini to explain the deterministic plan."""
-        raw = self._gemini.generate_structured_json(
+        raw = call_recorded(
+            "gemini.generate_structured_json",
+            {"agent": "inventory_rebalancing", "material_id": request.material_id},
+            self._gemini.generate_structured_json,
             prompt=build_prompt(
                 request=request,
                 target_plant=target_plant,
@@ -350,6 +372,7 @@ class InventoryRebalancingAgent:
             ),
             response_schema=LLM_REBALANCING_SCHEMA,
             system_instruction=SYSTEM_INSTRUCTION,
+            summarise=lambda result: "structured rebalancing narrative returned",
         )
         try:
             return LLMRebalancingNarrative.model_validate(raw)

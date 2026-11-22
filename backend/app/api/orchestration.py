@@ -72,6 +72,12 @@ def _serialise(thread_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
         "decision_log": state.get("decisions") or [],
         "errors": state.get("errors") or [],
         "missing_information": state.get("missing_information") or [],
+        # Step 5 collaboration record
+        "agent_executions": state.get("agent_executions") or [],
+        "scenario_screening": state.get("scenario_screening"),
+        "replanning": state.get("replanning") or [],
+        "replanning_rounds": state.get("replan_rounds") or 0,
+        "skipped_agents": state.get("skipped_agents") or [],
     }
     if approval_request is not None:
         body["approval_request"] = approval_request

@@ -3,7 +3,7 @@
 > Update this file immediately after **every** meaningful implementation milestone.
 > Never rely on conversation history to remember completed work.
 
-_Last updated: 2026-11-22 (Step 4 complete)_
+_Last updated: 2026-11-22 (Step 5 complete)_
 
 ---
 
@@ -26,10 +26,10 @@ React (Vite) frontend.
 
 | Field | Value |
 | --- | --- |
-| Current phase | **Step 4 — LangGraph Supervisor and Orchestration** |
+| Current phase | **Step 5 — Multi-Agent Collaboration and Autonomous Replanning** |
 | Status | ✅ **Complete and verified** |
-| Overall completion (estimate) | **~55%** (Steps 0–4 of 11 roadmap steps) |
-| Next step | **Step 5 — Multi-Agent Collaboration and Autonomous Replanning** |
+| Overall completion (estimate) | **~65%** (Steps 0–5 of 11 roadmap steps) |
+| Next step | **Step 6 — Human-in-the-Loop and Authorised Execution** |
 
 ---
 
@@ -246,6 +246,62 @@ runs a fixed sequence — and records why it chose each node.
   interrupt/resume, the JSON-only state contract, the iteration bound, the Mermaid
   export and an opt-in `RUN_LIVE_GEMINI=1` check. **19 passed, 1 skipped.**
 
+### Step 5 — Multi-Agent Collaboration and Autonomous Replanning ✅
+
+Step 5 extends the Step 4 graph so the collaboration is explicit, auditable and
+bounded. Every delegation is a structured task, every tool call is recorded from
+the real invocation, every attempt is an execution record, and a rejected plan
+opens at most two bounded revisions that preserve the plan they replaced.
+
+| Module | Purpose |
+| --- | --- |
+| `app/schemas/collaboration_schemas.py` | The structured protocol: `AgentTask`, `ToolInvocation`, `AgentExecution`, `ScenarioEvaluation`, `ScenarioScreening`, `ScenarioHistoryEntry`, `ReplanningRecord` |
+| `app/utils/tool_recording.py` | Context-local `ToolCallRecorder`, `call_recorded`, transparent `RecordingConnector`, `wrap_connector`; no-op outside a recorder |
+| `app/orchestration/collaboration.py` | Deterministic decisions: `build_agent_task`, `evaluate_scenario_plan`, `screening_requires_replan`, `build_scenario_revision`, `build_history_entry`, `build_replanning_record`; `MAX_REPLAN_ROUNDS = 2`, `AGENT_TOOLS`, `AGENT_OBJECTIVES` |
+| `app/orchestration/workflow.py` | Wires tasks, recording, screening and replanning into the graph |
+| `backend/docs/collaboration.md` | The collaboration record, screening, feedback loop, bounds and new status |
+
+- **Dynamic task delegation.** Before each agent node runs, `_agent_node` issues an
+  `AgentTask` whose `task_id` is `"{step:02d}-{agent}-{attempt}"`, whose `reason`
+  is copied from the decision log, and whose `tools`/`inputs` are the declared
+  tools and a JSON-safe input summary. `attempt` is the ordinal delegation, so a
+  retry and a replan both read `1, 2`.
+- **Real tool recording.** Agent nodes activate a `ToolCallRecorder`; connector
+  calls are observed by transparent `RecordingConnector` proxies (`mapping`,
+  `carriers`, `sap`), deterministic engines and Gemini are wrapped with
+  `call_recorded`, and the repository snapshot is recorded explicitly. Statuses
+  are `ok` / `error` / `unavailable`; simulated results carry `is_mock`.
+- **Deterministic result evaluation.** `evaluate_scenario_plan` builds a
+  `RecoveryProposal` per scenario and runs the same `validate_compliance` /
+  `validate_budget` / `evaluate_approval` engines Agent 5 uses, so screening and
+  audit cannot disagree. Ratings are `Rejected` / `Approved with approval` /
+  `Approved`.
+- **Feedback loop and conditional replanning.** When the recommended scenario is
+  rejected, `_screening_update` builds a cumulative `ScenarioRevision` (rejected
+  ids, excluded carriers, deterministic reasons, feedback), preserves the replaced
+  plan as a `ScenarioHistoryEntry`, records a `ReplanningRecord`, clears the plan
+  and routes back to the supervisor. `ScenarioPlanningAgent.plan(request, revision)`
+  filters excluded options without inventing replacements.
+- **Bounded autonomy.** `MAX_REPLAN_ROUNDS = 2`; an empty revised plan or exhausted
+  rounds ends the run with the new `STATUS_NO_COMPLIANT_RECOVERY` instead of
+  looping. The Step 4 iteration bound remains as a second guard.
+- **Unavailable tools.** The optional inventory node records a `SKIPPED` execution,
+  adds the agent to `skipped_agents` and records a gap; inside scenario planning the
+  Scenario agent continues without inventory data and still records
+  `sap.list_inventory` as `unavailable`.
+- **Final record.** `RecoveryRecommendation` gained `tasks`, `agent_executions`,
+  flat `tool_calls`, `scenario_screening`, `scenario_history`, `replanning`,
+  `replanning_rounds` and `skipped_agents`; the HTTP layer surfaces the same
+  fields.
+- **Tests.** `tests/test_collaboration.py` — 14 tests: task↔decision matching, tool
+  calls equal flattened executions and stay within `AGENT_TOOLS`, labelled mocks
+  and durations, all-approved screening with no replanning, one revision that
+  preserves history and excludes the rejected alternatives, an impossible
+  reliability floor ending in `no_compliant_recovery`, unavailable SAP skipped or
+  degraded gracefully, retries with attempts `[1, 2]`, JSON round-trip, and only
+  selected agents receiving tasks. **14 passed.** Full suite: **265 passed, 6
+  skipped**.
+
 ---
 
 ## 4. Partially completed steps
@@ -262,7 +318,7 @@ None.
 | 2 | External tools + deterministic business logic | ✅ Complete (verified) |
 | 3 | Remaining four AI agents | ✅ Complete (verified) |
 | 4 | LangGraph supervisor and orchestration | ✅ Complete (verified) |
-| 5 | Multi-agent collaboration + autonomous replanning | Not started |
+| 5 | Multi-agent collaboration + autonomous replanning | ✅ Complete (verified) |
 | 6 | Human-in-the-loop and authorised execution | Not started |
 | 7 | SAP integration | Not started |
 | 8 | Agent Activity and Decision dashboard | Not started |
@@ -430,6 +486,31 @@ None.
 | `backend/app/orchestration/__init__.py` | Re-exports the orchestration API (was a Step 0 placeholder) |
 | `backend/app/api/router.py` | Registered the orchestration router |
 
+### Created — backend (Step 5 — collaboration and replanning)
+
+| File | Purpose |
+| --- | --- |
+| `backend/app/schemas/collaboration_schemas.py` | `AgentTask`, `ToolInvocation`, `AgentExecution`, `ScenarioEvaluation`, `ScenarioScreening`, `ScenarioHistoryEntry`, `ReplanningRecord`, `ToolCallStatus`, `ExecutionStatus` |
+| `backend/app/utils/tool_recording.py` | `ToolCallRecorder`, `call_recorded`, `RecordingConnector` / `wrap_connector`, `record_tool_call`, result mocks/summaries |
+| `backend/app/orchestration/collaboration.py` | Deterministic collaboration helpers + `MAX_REPLAN_ROUNDS`, `AGENT_TOOLS`, `AGENT_OBJECTIVES` |
+| `backend/docs/collaboration.md` | Collaboration record, screening, feedback loop, bounds, new status |
+| `backend/tests/test_collaboration.py` | 14 tests: tasks ↔ decisions, tool recording, screening, one bounded revision with history, no-compliant recovery, unavailable tools, retries, JSON round-trip |
+
+### Modified — backend (Step 5)
+
+| File | Change |
+| --- | --- |
+| `backend/app/orchestration/state.py` | Added `STATUS_NO_COMPLIANT_RECOVERY`; `RecoveryRecommendation` gained the collaboration record fields; `WorkflowState` gained `tasks`, `agent_executions`, `scenario_history`, `replanning`, `skipped_agents` (accumulating) and `scenario_screening`, `scenario_revision`, `replan_rounds` (control) |
+| `backend/app/orchestration/workflow.py` | Issues `AgentTask`s, wraps executions in a `ToolCallRecorder`, records `AgentExecution`s (completed/failed/skipped), screens `ScenarioPlan`s, opens the bounded replanning loop, records skipped agents, populates the final collaboration record |
+| `backend/app/orchestration/__init__.py` | Re-exports the collaboration helpers, `MAX_REPLAN_ROUNDS`, `AGENT_TOOLS`, `AGENT_OBJECTIVES`, `STATUS_NO_COMPLIANT_RECOVERY` |
+| `backend/app/api/orchestration.py` | Response now also returns `agent_executions`, `scenario_screening`, `replanning`, `replanning_rounds`, `skipped_agents` |
+| `backend/app/schemas/scenario_schemas.py` | `ScenarioRevision` added; `ScenarioPlan` gained `revision_round` and `rejected_scenario_ids` |
+| `backend/app/agents/scenario_planning.py` | `plan(request, revision=None)` applies revisions deterministically, records tool calls and reports an unavailable inventory integration as a gap instead of raising |
+| `backend/app/agents/disruption_sensing.py` | Wraps the repository snapshot, risk engine and Gemini call with `call_recorded` |
+| `backend/app/agents/rerouting_logistics.py` | Wraps `rank_routes` and the Gemini call with `call_recorded` |
+| `backend/app/agents/inventory_rebalancing.py` | Wraps the inventory/safety-stock engines and the Gemini call with `call_recorded` |
+| `backend/app/agents/compliance_audit.py` | Wraps the compliance, budget and approval engines and the Gemini call with `call_recorded` |
+
 ### Created — frontend
 
 | File | Purpose |
@@ -498,6 +579,9 @@ Verified installed versions:
 Frontend: React 19.3.1, react-dom 19.3.1, Vite 8.3.8, `@vitejs/plugin-react` 6.1.2,
 oxlint 1.90.0 (24 packages installed, 0 vulnerabilities).
 
+Step 5 added **no new packages** — it reuses LangGraph, Pydantic and the existing
+Step 1/2 layers.
+
 ---
 
 ## 8. Environment variables configured
@@ -558,7 +642,9 @@ npm run dev
 
 | Test | Command | Result |
 | --- | --- | --- |
-| Backend unit tests (full suite) | `..\.venv\Scripts\python.exe -m pytest` (in `backend/`) | ✅ **257 tests collected; 251 passed, 6 skipped** (the 5 opt-in `RUN_LIVE_GEMINI=1` agent tests + 1 live supervisor test skip by default; repository tests skip when PostgreSQL is down) |
+| Backend unit tests (full suite) | `..\.venv\Scripts\python.exe -m pytest` (in `backend/`) | ✅ **271 tests collected; 265 passed, 6 skipped** (the 5 opt-in `RUN_LIVE_GEMINI=1` agent tests + 1 live supervisor test skip by default; repository tests skip when PostgreSQL is down) |
+| Step 5 collaboration tests | `pytest tests/test_collaboration.py` | ✅ **14 passed** (tasks ↔ decisions, tool-call recording, deterministic screening, one bounded revision preserving history, no-compliant recovery, unavailable tools, retries, JSON round-trip) |
+| **Live Gemini through the supervisor (Step 5)** | `$env:RUN_LIVE_GEMINI="1"; pytest tests/test_orchestration.py -k live` | ✅ **1 passed** — real Gemini reasoning through the new tool-recording wrappers |
 | Step 4 orchestration tests | `pytest tests/test_orchestration.py` | ✅ **19 passed, 1 skipped** (six roadmap scenarios, interrupt/resume, JSON state contract, iteration bound, Mermaid export, opt-in live) |
 | Orchestration API route check | `app.openapi()["paths"]` | ✅ `/api/orchestration/workflows`, `…/{thread_id}/resume`, `…/{thread_id}/state` mounted |
 | Step 4 smoke run | `python xf_step4_smoke.py` | ✅ exit 0 — direct path, no-carrier path, High-severity path, full Mermaid source |
@@ -624,11 +710,14 @@ npm run dev
    Step 1 note ("LangGraph deliberately not installed yet") is superseded: it was
    deferred until the step that needs it, to honour "do not add unnecessary
    packages".
-9. **Steps 5–10 not started** — intentional, per the roadmap rule not to proceed
-   automatically. Step 4 is complete: the supervisor graph is built, tested and
-   reachable over HTTP, and a run can be paused at the approval gate and resumed
-   from its checkpoint. Step 5 (multi-agent collaboration and autonomous
-   replanning) builds on this graph rather than replacing it.
+9. **Steps 6–10 not started** — intentional, per the roadmap rule not to proceed
+   automatically. Step 5 is complete: every delegation is a recorded `AgentTask`,
+   every tool call is recorded from the real invocation, each attempt is an
+   `AgentExecution`, the supervisor screens the Scenario plan deterministically and
+   a rejected plan triggers at most `MAX_REPLAN_ROUNDS = 2` bounded revisions that
+   preserve the previous plan. The Step 4 graph was extended, not replaced, and
+   the Step 4 public behaviour (delegation order, decisions, statuses, interrupt
+   /resume) is unchanged and re-verified by its own tests.
 10. **Postgres checkpoint tables are created on first use.** `postgres_checkpointer()`
     calls `saver.setup()` (idempotent) when the workflow is built with the default
     `LANGGRAPH_CHECKPOINT_BACKEND=postgres`; a database must be reachable for that
@@ -638,28 +727,33 @@ npm run dev
 
 ## 12. Exact next action
 
-**Start Step 5 — Multi-Agent Collaboration and Autonomous Replanning.**
+**Start Step 6 — Human-in-the-Loop and Authorised Execution.**
 
-Step 4 is complete and verified (see §3 and §10). The five specialised agents are
-now wired into one compiled LangGraph graph with a dynamic supervisor, an approval
-gate, error handling and PostgreSQL-backed checkpointing, and the graph is
-reachable over HTTP (`/api/orchestration/...`). Step 5 extends that graph — it does
-not replace it:
+Step 5 is complete and verified (see §3 and §10). The supervisor now issues
+structured tasks, records every real tool call and execution, screens scenario
+plans deterministically, replans within a hard bound and preserves history. Step 6
+builds on this rather than replacing it:
 
-1. **Dynamic task delegation** and structured inter-agent communication.
-2. **Feedback loops and conditional replanning** when an agent result is
-   unsatisfactory.
-3. **Tool selection** and handling of unavailable tools.
-4. **Failure recovery** beyond the current single bounded retry.
-5. **Scenario comparison** and preserving previous scenario results while
-   replanning.
-6. **Bounded autonomous iteration** — no infinite loops.
-7. **Track agent execution history** and why the supervisor selected each agent.
-8. **No fabricated agent messages** — interactions must reflect executed
-   functions.
+1. **Approval Management Engine** — make the approval requirement an explicit,
+   recorded decision (the engine already exists; the runtime wiring is Step 6).
+2. **Approval interface** showing the proposal (reason, cost/risk impact,
+   validations) to the approver.
+3. **Approve / reject / request modifications**, with rejection feedback returned
+   to the supervisor.
+4. **Authorised execution service** — shipment plan updates, inventory transfer
+   requests, carrier change requests and SAP writes, each mock-labelled where
+   credentials are unavailable.
+5. **Authentication and authorisation** — never trust a frontend approval flag;
+   record approver identity and timestamp.
+6. **Idempotency and version checks** — prevent duplicate execution and validate
+   the approval against the current proposal version.
+7. **Record the entire decision history** through to execution.
+8. **Enforce approval** for high-impact reroutes, large inventory redistributions,
+   over-threshold spend and sensitive supplier changes.
 
-The Step 4 supervisor already records a per-pass `SupervisorDecision(step, action,
-reason)` and an execution history, so Step 5 builds on real, auditable data.
+The Step 4 approval gate already interrupts and resumes from a PostgreSQL
+checkpoint, and Step 5 records why each agent was selected, so Step 6 adds
+identity, authorisation and execution on top of existing auditable data.
 
 **Credentials available (recorded 2026-11-22) — do not re-ask:**
 
@@ -775,3 +869,29 @@ reason)` and an execution history, so Step 5 builds on real, auditable data.
     the LangGraph checkpoint adapter use different Postgres drivers (psycopg2 vs
     psycopg 3), so `checkpointer_dsn()` normalises the URL rather than sharing one
     engine — keeping the live ORM layer and the checkpoint layer independent.
+26. **Collaboration is recorded, never narrated (Step 5).** An `AgentTask` exists
+    only when the supervisor actually selected that node, an `AgentExecution` only
+    when the node ran, and a `ToolInvocation` is written by the tool itself. There
+    is no simulated inter-agent dialogue; the audit trail is the executed call
+    graph.
+27. **Tool recording is transparent and inert by default (Step 5).** Connectors are
+    observed through a proxy that forwards every call unchanged and records only
+    the observation; engines and Gemini use `call_recorded`, which re-raises
+    unchanged. With no recorder active the helpers are no-ops, so unit tests that
+    call an agent directly behave exactly as before.
+28. **Screening reuses the audit engines (Step 5).** The supervisor evaluates a
+    scenario plan with the same `validate_compliance` / `validate_budget` /
+    `evaluate_approval` calls and the same verdict derivation as Agent 5, so a plan
+    that passes screening cannot later fail the audit; replanning triggers only on
+    a genuine deterministic rejection.
+29. **Replanning is bounded and always preserves history (Step 5).**
+    `MAX_REPLAN_ROUNDS = 2` caps the loop, revisions exclude rejected alternatives
+    without inventing replacements, and every replaced plan is stored as a
+    `ScenarioHistoryEntry` plus a `ReplanningRecord`. An empty revised plan ends in
+    `STATUS_NO_COMPLIANT_RECOVERY` instead of spinning; the Step 4 iteration bound
+    remains a second guard.
+30. **Unavailable tools degrade honestly (Step 5).** `IntegrationNotConfiguredError`
+    is recorded as an `unavailable` tool call; the optional inventory node becomes a
+    `SKIPPED` execution (agent added to `skipped_agents`, gap recorded) and scenario
+    planning continues without inventory data. An absent integration never becomes
+    simulated data and never fails the whole run.

@@ -555,4 +555,106 @@ the decision", plus malformed-output and missing-key failures, and an opt-in
 
 ---
 
+## 2026-11-22 — Session 5: Step 5 — Multi-Agent Collaboration and Autonomous Replanning
+
+### Starting point (session-recovery protocol)
+
+Resumed from `PROJECT_PROGRESS.md` §12 and `TASK_CHECKLIST.md` Step 5. Steps 0–4
+were verified complete (the suite passed 251 / 6 skipped), so Step 5 was the first
+incomplete task. The Step 4 supervisor graph, state and tests were read first and
+**extended, not rebuilt**: delegation order, the six decisions, statuses and
+interrupt/resume are unchanged and re-verified by the Step 4 tests.
+
+### Work completed
+
+1. **`app/schemas/collaboration_schemas.py`** — the structured protocol:
+   `AgentTask`, `ToolInvocation`, `AgentExecution`, `ScenarioEvaluation`,
+   `ScenarioScreening`, `ScenarioHistoryEntry`, `ReplanningRecord`, plus
+   `ToolCallStatus` and `ExecutionStatus`.
+2. **`app/utils/tool_recording.py`** — a context-local `ToolCallRecorder`,
+   `call_recorded` (records duration/outcome and re-raises unchanged),
+   `RecordingConnector` / `wrap_connector` (transparent proxy over external
+   connectors) and `record_tool_call`. All helpers are no-ops when no recorder is
+   active, so direct agent calls in unit tests behave exactly as before.
+3. **`app/orchestration/collaboration.py`** — the deterministic decisions:
+   `build_agent_task`, `evaluate_scenario_plan` (reuses the Agent 5 compliance,
+   budget and approval engines), `screening_requires_replan`,
+   `build_scenario_revision`, `build_history_entry`, `build_replanning_record`,
+   the `AGENT_TOOLS` / `AGENT_OBJECTIVES` maps and `MAX_REPLAN_ROUNDS = 2`.
+4. **`app/orchestration/state.py`** — added `STATUS_NO_COMPLIANT_RECOVERY`; the
+   `RecoveryRecommendation` gained the collaboration record; `WorkflowState` gained
+   accumulating `tasks` / `agent_executions` / `scenario_history` / `replanning` /
+   `skipped_agents` channels and control `scenario_screening` / `scenario_revision`
+   / `replan_rounds`.
+5. **`app/orchestration/workflow.py`** — each agent node now issues a real
+   `AgentTask`, activates a `ToolCallRecorder`, writes an `AgentExecution`
+   (completed, failed or skipped), screens a returned `ScenarioPlan`, opens the
+   bounded replanning loop and records everything in `finalize`.
+6. **Agent instrumentation** — Disruption Sensing, Rerouting, Inventory,
+   Compliance and Scenario planning wrap their deterministic engine calls and
+   Gemini call with `call_recorded`; connector calls are recorded by the proxy.
+7. **`app/agents/scenario_planning.py`** — `plan(request, revision=None)` applies
+   a revision deterministically (drops rejected ids and excluded carriers, never
+   invents a replacement) and degrades gracefully when the inventory integration
+   is unavailable.
+8. **`app/api/orchestration.py`** — the response now also returns
+   `agent_executions`, `scenario_screening`, `replanning`, `replanning_rounds` and
+   `skipped_agents`.
+9. **`backend/docs/collaboration.md`** — the collaboration record, screening,
+   feedback loop, bounds and the new status.
+10. **`tests/test_collaboration.py`** — 14 tests (listed under "Tests and results").
+
+### Important implementation decisions
+
+- **Recorded, not narrated.** A task exists only for an executed decision, an
+  execution only when the node ran, and a tool call only when the tool was called;
+  tests assert this correspondence.
+- **Screening mirrors the audit.** Using the same engines and verdict derivation
+  means a plan that passes screening cannot later fail the audit, so replanning is
+  triggered only by a real deterministic rejection.
+- **Bounded and history-preserving.** `MAX_REPLAN_ROUNDS = 2`; revisions exclude
+  rejected alternatives, the replaced plan is stored as a `ScenarioHistoryEntry`,
+  and an empty revised plan ends in `no_compliant_recovery` instead of looping.
+- **Unavailable tools degrade honestly.** `IntegrationNotConfiguredError` is
+  recorded as `unavailable`; the optional inventory node becomes `SKIPPED` and
+  scenario planning continues without inventory data — never simulated data.
+- **Attempts are delegation ordinals.** `_next_attempt` counts prior tasks for the
+  agent, so a retry and a replan both read attempts `[1, 2]`.
+
+### Dependencies installed
+
+- None. Step 5 reuses LangGraph, Pydantic and the existing layers.
+
+### Tests and results
+
+| Check | Result |
+| --- | --- |
+| `python -m pytest` (full backend suite) | ✅ **265 passed, 6 skipped** (271 collected; the 6 skips are the opt-in `RUN_LIVE_GEMINI=1` tests) |
+| `pytest tests/test_collaboration.py` | ✅ **14 passed** |
+| `pytest tests/test_orchestration.py` | ✅ **19 passed, 1 skipped** (Step 4 behaviour unchanged) |
+| `pytest tests/test_scenario_planning.py tests/test_rerouting_logistics.py tests/test_inventory_rebalancing.py tests/test_compliance_audit.py` | ✅ passed (agent instrumentation changed nothing observable) |
+| `RUN_LIVE_GEMINI=1 pytest tests/test_orchestration.py -k live` | ✅ **1 passed** — real Gemini reasoning through the new tool-recording wrappers |
+
+### Problems encountered and their solutions
+
+1. **`make_request(applicable_rules=...)` rejected the override** — the helper
+   always passes its own list. *Solution:* added `request_with_rules(rules)` using
+   `make_request().model_copy(update={"applicable_rules": rules})`.
+2. **Both replan executions reported attempt 1** — the attempt was taken from the
+   retry counter. *Solution:* added `_next_attempt`, which counts prior issued
+   tasks for that agent; retries and replans now both read `[1, 2]`.
+3. **The unavailable-SAP test never ran the standalone rebalancing node** — the
+   default multi-shipment payload takes the scenario path. *Solution:* the test
+   uses `direct_path_gemini()`.
+4. **`state["audit_report"]` raised `KeyError` when absent** — LangGraph omits
+   never-written channels. *Solution:* read `state.get("audit_report")`.
+
+### Remaining work
+
+- Step 6 (human-in-the-loop and authorised execution) and beyond — see
+  `TASK_CHECKLIST.md`. Step 5 is complete and verified; the roadmap rule "do not
+  proceed to the next step automatically" was observed.
+
+---
+
 _All progress files updated at the end of this milestone._

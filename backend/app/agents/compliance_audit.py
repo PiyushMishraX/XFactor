@@ -37,6 +37,7 @@ from app.tools.compliance import (
     RuleFinding,
     validate_compliance,
 )
+from app.utils.tool_recording import call_recorded
 
 logger = logging.getLogger(__name__)
 
@@ -134,15 +135,37 @@ class ComplianceAuditAgent:
         proposal = request.proposal
         logger.info("Auditing proposal %s against %s rule(s)", proposal.proposal_id, len(request.applicable_rules))
 
-        compliance = validate_compliance(
+        compliance = call_recorded(
+            "compliance.validate_compliance",
+            {
+                "proposal_id": proposal.proposal_id,
+                "rule_count": len(request.applicable_rules),
+            },
+            validate_compliance,
             proposal=proposal,
             applicable_rules=request.applicable_rules,
+            summarise=lambda result: (
+                f"compliant={result.is_compliant}, {len(result.violations)} violation(s)"
+            ),
         )
-        budget = validate_budget(
+        budget = call_recorded(
+            "budget.validate_budget",
+            {
+                "proposal_id": proposal.proposal_id,
+                "proposed_cost_usd": proposal.total_cost_usd,
+                "available_budget_usd": request.available_budget_usd,
+            },
+            validate_budget,
             proposed_cost_usd=proposal.total_cost_usd,
             available_budget_usd=request.available_budget_usd,
+            summarise=lambda result: (
+                f"within_budget={result.is_within_budget}, overage {result.overage_usd} USD"
+            ),
         )
-        approval = evaluate_approval(
+        approval = call_recorded(
+            "approval.evaluate_approval",
+            {"proposal_id": proposal.proposal_id, "action_type": request.action_type},
+            evaluate_approval,
             request=ApprovalRequest(
                 proposal_id=proposal.proposal_id,
                 action_type=request.action_type,
@@ -154,6 +177,9 @@ class ComplianceAuditAgent:
                 compliance_requires_approval=compliance.requires_approval,
             ),
             policy=request.approval_policy,
+            summarise=lambda result: (
+                f"approval_required={result.requires_approval} at {result.approval_level}"
+            ),
         )
 
         is_approved = compliance.is_compliant and budget.is_within_budget
@@ -261,10 +287,14 @@ class ComplianceAuditAgent:
         verdict: AuditVerdict,
     ) -> LLMAuditNarrative:
         """Ask Gemini to explain the deterministic verdict."""
-        raw = self._gemini.generate_structured_json(
+        raw = call_recorded(
+            "gemini.generate_structured_json",
+            {"agent": "compliance_audit", "proposal_id": request.proposal.proposal_id},
+            self._gemini.generate_structured_json,
             prompt=build_prompt(request, compliance, budget, verdict),
             response_schema=LLM_AUDIT_SCHEMA,
             system_instruction=SYSTEM_INSTRUCTION,
+            summarise=lambda result: "structured audit narrative returned",
         )
         try:
             return LLMAuditNarrative.model_validate(raw)

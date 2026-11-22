@@ -83,6 +83,7 @@ X Factor/
 │   │   ├── config/            Settings and logging configuration
 │   │   └── utils/             Shared helpers
 │   ├── tests/                 pytest test-suite
+│   ├── docs/                  Workflow and collaboration design notes
 │   ├── requirements.txt
 │   ├── pytest.ini
 │   └── .env.example
@@ -154,6 +155,9 @@ cd "d:\X Factor\backend"
 | `GET /` | Service index |
 | `GET /api/health` | Service + PostgreSQL health |
 | `GET /api/health/live` | Liveness probe (no dependencies) |
+| `POST /api/orchestration/workflows` | Start a supervisor recovery run |
+| `POST /api/orchestration/workflows/{thread_id}/resume` | Answer the approval gate and resume |
+| `GET /api/orchestration/workflows/{thread_id}/state` | Read the last saved workflow state |
 | `GET /docs` | OpenAPI / Swagger UI |
 
 ### Frontend (http://localhost:5173)
@@ -205,11 +209,23 @@ npm run build
 
 ## Current status
 
-**Phase: Step 0 — Project Initialization and Architecture (complete).**
+**Phase: Step 5 — Multi-Agent Collaboration and Autonomous Replanning (complete).**
 
-Both services run independently and the frontend successfully communicates with
-the backend. No AI agents, tools or orchestration exist yet — those arrive in
-Steps 1–5.
+Steps 0–4 delivered the platform skeleton, Gemini reasoning, the deterministic
+tools, all five specialised agents and the compiled LangGraph supervisor. Step 5
+makes the collaboration auditable: every delegation is a structured `AgentTask`,
+every tool call is recorded from the real invocation, each agent attempt is an
+`AgentExecution`, the supervisor screens the Scenario agent's plan with the same
+deterministic engines Agent 5 audits with, and a rejected plan triggers at most
+`MAX_REPLAN_ROUNDS = 2` bounded revisions that preserve the plan they replaced.
 
+Backend suite: **265 passed, 6 skipped** (the skips are the opt-in
+`RUN_LIVE_GEMINI=1` tests).
+
+The next step is **Step 6 — Human-in-the-Loop and Authorised Execution** (not
+started).
+
+Workflow details: [backend/docs/workflow.md](backend/docs/workflow.md) and
+[backend/docs/collaboration.md](backend/docs/collaboration.md).
 See [PROJECT_PROGRESS.md](PROJECT_PROGRESS.md) for the live status and
 [DEVELOPMENT_ROADMAP.txt](DEVELOPMENT_ROADMAP.txt) for the full roadmap.

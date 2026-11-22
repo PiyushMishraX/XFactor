@@ -10,8 +10,9 @@ Three modules make up the Step 4 orchestration layer:
   supervisor node, five agent nodes, an approval gate, an error-handling node
   and the terminal node, connected by conditional edges.
 
-Step 5 (multi-agent collaboration and replanning) builds on this graph rather
-than replacing it.
+Step 5 adds :mod:`app.orchestration.collaboration`, the deterministic
+collaboration mechanics behind the graph: task objects, deterministic screening
+of a scenario plan, bounded replanning and preserved scenario history.
 """
 
 from app.orchestration.checkpointing import (
@@ -19,6 +20,17 @@ from app.orchestration.checkpointing import (
     in_memory_checkpointer,
     open_checkpointer,
     postgres_checkpointer,
+)
+from app.orchestration.collaboration import (
+    AGENT_OBJECTIVES,
+    AGENT_TOOLS,
+    MAX_REPLAN_ROUNDS,
+    build_agent_task,
+    build_history_entry,
+    build_replanning_record,
+    build_scenario_revision,
+    evaluate_scenario_plan,
+    screening_requires_replan,
 )
 from app.orchestration.state import (
     AGENT_COMPLIANCE,
@@ -32,6 +44,7 @@ from app.orchestration.state import (
     NODE_ERROR,
     NODE_FINALIZE,
     NODE_SUPERVISOR,
+    STATUS_NO_COMPLIANT_RECOVERY,
     RecoveryRecommendation,
     RecoveryRequest,
     SupervisorDecision,
@@ -52,30 +65,40 @@ from app.orchestration.workflow import (
 __all__ = [
     "AGENT_COMPLIANCE",
     "AGENT_NODES",
+    "AGENT_OBJECTIVES",
     "AGENT_REBALANCING",
     "AGENT_REROUTING",
     "AGENT_SCENARIO",
     "AGENT_SENSING",
+    "AGENT_TOOLS",
     "DEFAULT_COMPLIANCE_RULES",
+    "MAX_REPLAN_ROUNDS",
     "NODE_APPROVAL_GATE",
     "NODE_ERROR",
     "NODE_FINALIZE",
     "NODE_SUPERVISOR",
+    "STATUS_NO_COMPLIANT_RECOVERY",
     "RecoveryRecommendation",
     "RecoveryRequest",
     "SupervisorAgents",
     "SupervisorDecision",
     "SupervisorWorkflow",
     "WorkflowState",
+    "build_agent_task",
     "build_agents",
     "build_default_agents",
     "build_graph",
+    "build_history_entry",
+    "build_replanning_record",
+    "build_scenario_revision",
     "checkpointer_dsn",
+    "evaluate_scenario_plan",
     "in_memory_checkpointer",
     "mermaid_diagram",
     "open_checkpointer",
     "pending_interrupt",
     "postgres_checkpointer",
+    "screening_requires_replan",
     "supervisor_runtime",
     "thread_config",
 ]

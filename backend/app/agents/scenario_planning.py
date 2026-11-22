@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.agents.inventory_rebalancing import InventoryRebalancingAgent
 from app.agents.rerouting_logistics import ReroutingLogisticsAgent
+from app.integrations.base import IntegrationNotConfiguredError
 from app.schemas.disruption_schemas import EvidenceItem
 from app.schemas.rerouting_schemas import ReroutingAnalysis, ReroutingRequest
 from app.schemas.rebalancing_schemas import RebalancingPlan
@@ -37,10 +38,12 @@ from app.schemas.scenario_schemas import (
     ScenarioFeasibility,
     ScenarioPlan,
     ScenarioRequest,
+    ScenarioRevision,
 )
 from app.services.gemini_service import GeminiService
 from app.tools.base import round_units
 from app.tools.route_optimization import RouteOption, RouteRanking, rank_routes
+from app.utils.tool_recording import call_recorded
 
 logger = logging.getLogger(__name__)
 
@@ -153,8 +156,19 @@ class ScenarioPlanningAgent:
         self._rerouting = rerouting
         self._rebalancing = rebalancing
 
-    def plan(self, request: ScenarioRequest) -> ScenarioPlan:
+    def plan(
+        self,
+        request: ScenarioRequest,
+        revision: Optional[ScenarioRevision] = None,
+    ) -> ScenarioPlan:
         """Produce a ranked recovery plan for ``request``.
+
+        Args:
+            request: The disruption, lane and requested sub-analyses.
+            revision: Optional supervisor feedback. When supplied, the rejected
+                scenario ids and carriers are excluded before the remaining
+                alternatives are re-scored, and the revision provenance is
+                recorded on the plan.
 
         Raises:
             GeminiNotConfiguredError: No Gemini API key is configured.
@@ -164,22 +178,38 @@ class ScenarioPlanningAgent:
             InventoryRebalancingError: The requested inventory analysis failed.
         """
         logger.info(
-            "Scenario planning for event %s: %s -> %s",
+            "Scenario planning for event %s: %s -> %s%s",
             request.event_id,
             request.origin,
             request.destination,
+            f" (revision round {revision.round})" if revision else "",
         )
 
-        logistics = self._rerouting.analyse(self._rerouting_request(request))
-        inventory = self._inventory_plan(request)
+        logistics = call_recorded(
+            "rerouting_logistics.analyse",
+            {"event_id": request.event_id, "lane": f"{request.origin}->{request.destination}"},
+            self._rerouting.analyse,
+            self._rerouting_request(request),
+            summarise=lambda result: (
+                f"{len(result.ranked_routes)} route(s), recommended "
+                f"{result.recommended_route_id or 'none'}"
+            ),
+        )
+        inventory, inventory_skip = self._inventory_plan(request)
 
-        drafts = self._draft_scenarios(request, logistics)
-        ranking = rank_routes(options=[draft.option for draft in drafts])
+        drafts = self._apply_revision(self._draft_scenarios(request, logistics), revision)
+        ranking = call_recorded(
+            "route_optimization.rank_routes",
+            {"option_count": len(drafts)},
+            rank_routes,
+            options=[draft.option for draft in drafts],
+            summarise=lambda result: f"{len(result.ranked)} scenario(s) ranked",
+        )
         scenarios = self._assemble(request, drafts, ranking)
 
         recommended = scenarios[0] if scenarios else None
         incumbent = next((item for item in scenarios if item.approach == _CONTINUE_APPROACH), None)
-        narrative = self._narrate(request, logistics, inventory, scenarios, recommended)
+        narrative = self._narrate(request, logistics, inventory, scenarios, recommended, revision)
         self._attach_assessments(scenarios, narrative)
 
         plan = ScenarioPlan(
@@ -204,9 +234,13 @@ class ScenarioPlanningAgent:
                 if recommended and incumbent
                 else None
             ),
+            revision_round=revision.round if revision else 0,
+            rejected_scenario_ids=(
+                list(revision.rejected_scenario_ids) if revision else []
+            ),
             evidence=self._build_evidence(logistics, inventory, len(scenarios)),
             missing_information=self._missing_information(
-                logistics, inventory, scenarios, narrative
+                logistics, inventory, scenarios, narrative, revision, inventory_skip
             ),
         )
 
@@ -236,11 +270,62 @@ class ScenarioPlanningAgent:
             risk_factors=list(request.risk_factors),
         )
 
-    def _inventory_plan(self, request: ScenarioRequest) -> Optional[RebalancingPlan]:
-        """Request the inventory impact analysis when the caller asked for one."""
+    def _inventory_plan(
+        self, request: ScenarioRequest
+    ) -> Tuple[Optional[RebalancingPlan], Optional[str]]:
+        """Request the inventory impact analysis when the caller asked for one.
+
+        An unconfigured inventory integration is a *tool availability* problem,
+        not a planning failure: the plan continues without inventory data and
+        records the gap, which is what ``missing_information`` is for.
+        """
         if request.inventory is None:
-            return None
-        return self._rebalancing.plan(request.inventory)
+            return None, None
+        try:
+            plan = call_recorded(
+                "inventory_rebalancing.plan",
+                {"material_id": request.inventory.material_id},
+                self._rebalancing.plan,
+                request.inventory,
+                summarise=lambda result: (
+                    f"shortage {result.shortage_before} -> {result.shortage_after} unit(s)"
+                ),
+            )
+        except IntegrationNotConfiguredError as exc:
+            logger.warning("Inventory analysis unavailable: %s", exc)
+            return None, (
+                f"The inventory integration is unavailable ({exc}), so inventory impact "
+                f"could not be analysed and was excluded from the scenarios."
+            )
+        return plan, None
+
+    @staticmethod
+    def _apply_revision(
+        drafts: Sequence["_Draft"], revision: Optional[ScenarioRevision]
+    ) -> List["_Draft"]:
+        """Drop the alternatives a supervisor revision explicitly rejected.
+
+        Filtering is by scenario id and by carrier name, both supplied by the
+        supervisor from real validation results. No alternative is invented to
+        replace a rejected one; if nothing remains the plan is honestly empty.
+        """
+        if revision is None:
+            return list(drafts)
+        rejected = {scenario_id.strip() for scenario_id in revision.rejected_scenario_ids}
+        excluded = {carrier.strip().lower() for carrier in revision.excluded_carriers if carrier}
+        kept = [
+            draft
+            for draft in drafts
+            if draft.scenario_id not in rejected
+            and draft.option.carrier.strip().lower() not in excluded
+        ]
+        logger.info(
+            "Revision round %s excluded %s draft(s); %s remain",
+            revision.round,
+            len(drafts) - len(kept),
+            len(kept),
+        )
+        return kept
 
     # -- deterministic scenario construction -------------------------------
 
@@ -439,12 +524,17 @@ class ScenarioPlanningAgent:
         inventory: Optional[RebalancingPlan],
         scenarios: Sequence[ScenarioComparison],
         recommended: Optional[ScenarioComparison],
+        revision: Optional[ScenarioRevision] = None,
     ) -> LLMScenarioNarrative:
         """Ask Gemini to explain the deterministic scenario ranking."""
-        raw = self._gemini.generate_structured_json(
-            prompt=build_prompt(request, logistics, inventory, scenarios, recommended),
+        raw = call_recorded(
+            "gemini.generate_structured_json",
+            {"agent": "scenario_planning", "event_id": request.event_id},
+            self._gemini.generate_structured_json,
+            prompt=build_prompt(request, logistics, inventory, scenarios, recommended, revision),
             response_schema=LLM_SCENARIO_SCHEMA,
             system_instruction=SYSTEM_INSTRUCTION,
+            summarise=lambda result: "structured scenario narrative returned",
         )
         try:
             return LLMScenarioNarrative.model_validate(raw)
@@ -498,20 +588,35 @@ class ScenarioPlanningAgent:
         inventory: Optional[RebalancingPlan],
         scenarios: Sequence[ScenarioComparison],
         narrative: LLMScenarioNarrative,
+        revision: Optional[ScenarioRevision] = None,
+        inventory_skip: Optional[str] = None,
     ) -> List[str]:
         """Combine the model's gaps, the sub-agents' gaps and the agent's own."""
         gaps: List[str] = [
             *narrative.missing_information,
             *logistics.missing_information,
         ]
-        if inventory is None:
+        if inventory is None and inventory_skip:
+            gaps.append(inventory_skip)
+        elif inventory is None:
             gaps.append(
                 "No inventory impact analysis was requested, so stock coverage was not "
                 "considered when ranking the scenarios."
             )
         else:
             gaps.extend(inventory.missing_information)
-        if len(scenarios) < 3:
+        if revision is not None and revision.rejected_scenario_ids:
+            gaps.append(
+                f"Revision round {revision.round} excluded "
+                f"{', '.join(revision.rejected_scenario_ids)} at the supervisor's request, "
+                f"so only the remaining alternatives were re-scored."
+            )
+        if not scenarios:
+            gaps.append(
+                "No recovery alternative remains after exclusions, so no plan can be "
+                "recommended from the available data."
+            )
+        elif len(scenarios) < 3:
             gaps.append(
                 f"Only {len(scenarios)} recovery scenario(s) could be built from the available "
                 f"data; the roadmap asks for at least three when sufficient data exists."
@@ -530,6 +635,7 @@ def build_prompt(
     inventory: Optional[RebalancingPlan],
     scenarios: Sequence[ScenarioComparison],
     recommended: Optional[ScenarioComparison],
+    revision: Optional[ScenarioRevision] = None,
 ) -> str:
     """Render the deterministic facts into the user-turn prompt."""
     lines = [
@@ -560,6 +666,21 @@ def build_prompt(
         lines.append(
             f"Shortage before: {inventory.shortage_before} units; after recommended "
             f"transfers: {inventory.shortage_after} units."
+        )
+
+    if revision is not None:
+        lines.extend(
+            [
+                "",
+                f"SUPERVISOR REVISION ROUND: {revision.round}",
+                "-----------------------------------",
+                f"EXCLUDED SCENARIO IDS: "
+                f"{', '.join(revision.rejected_scenario_ids) or 'none'}",
+                f"EXCLUDED CARRIERS: {', '.join(revision.excluded_carriers) or 'none'}",
+                f"REVISION FEEDBACK: {revision.feedback or 'not supplied'}",
+                "These alternatives failed deterministic validation and are absent below. "
+                "Explain only the alternatives that remain.",
+            ]
         )
 
     lines.extend(

@@ -33,6 +33,7 @@ from app.schemas.rerouting_schemas import (
 )
 from app.services.gemini_service import GeminiService
 from app.tools.route_optimization import RouteOption, RouteRanking, rank_routes
+from app.utils.tool_recording import call_recorded
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +132,13 @@ class ReroutingLogisticsAgent:
         lane = self._mapping.get_route(origin=request.origin, destination=request.destination)
         services = self._candidate_services(request)
         options = [self._build_option(request, lane, service) for service in services]
-        ranking = rank_routes(options=options)
+        ranking = call_recorded(
+            "route_optimization.rank_routes",
+            {"option_count": len(options)},
+            rank_routes,
+            options=options,
+            summarise=lambda result: f"{len(result.ranked)} route(s) ranked",
+        )
 
         ranked_routes = self._to_analysis_options(options, ranking, request)
         recommended = ranking.recommended_route_id
@@ -252,10 +259,14 @@ class ReroutingLogisticsAgent:
         recommended: Optional[str],
     ) -> LLMReroutingNarrative:
         """Ask Gemini to explain the deterministic ranking."""
-        raw = self._gemini.generate_structured_json(
+        raw = call_recorded(
+            "gemini.generate_structured_json",
+            {"agent": "rerouting_logistics", "disruption_id": request.disruption_id},
+            self._gemini.generate_structured_json,
             prompt=build_prompt(request, lane, options, recommended),
             response_schema=LLM_REROUTING_SCHEMA,
             system_instruction=SYSTEM_INSTRUCTION,
+            summarise=lambda result: "structured rerouting narrative returned",
         )
         try:
             return LLMReroutingNarrative.model_validate(raw)

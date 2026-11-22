@@ -54,6 +54,8 @@ from __future__ import annotations
 import contextlib
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from langgraph.graph import END, START, StateGraph
@@ -71,6 +73,15 @@ from app.integrations.carriers import CarrierConnector, get_carrier_connector
 from app.integrations.mapping import MappingConnector, get_mapping_connector
 from app.integrations.sap import SAPConnector, get_sap_connector
 from app.orchestration.checkpointing import open_checkpointer
+from app.orchestration.collaboration import (
+    MAX_REPLAN_ROUNDS,
+    build_agent_task,
+    build_history_entry,
+    build_replanning_record,
+    build_scenario_revision,
+    evaluate_scenario_plan,
+    screening_requires_replan,
+)
 from app.orchestration.state import (
     AGENT_COMPLIANCE,
     AGENT_NODES,
@@ -88,6 +99,7 @@ from app.orchestration.state import (
     STATUS_FAILED,
     STATUS_ITERATION_LIMIT,
     STATUS_NO_ACTION,
+    STATUS_NO_COMPLIANT_RECOVERY,
     STATUS_NO_FEASIBLE_RECOVERY,
     RecoveryRecommendation,
     RecoveryRequest,
@@ -95,10 +107,23 @@ from app.orchestration.state import (
     WorkflowState,
 )
 from app.schemas.audit_schemas import AuditReport, AuditRequest, AuditVerdict
+from app.schemas.collaboration_schemas import (
+    AgentExecution,
+    AgentTask,
+    ExecutionStatus,
+    ReplanningRecord,
+    ScenarioHistoryEntry,
+    ScenarioScreening,
+    ToolInvocation,
+)
 from app.schemas.disruption_schemas import EvidenceItem
 from app.schemas.rebalancing_schemas import RebalancingPlan, RebalancingRequest
 from app.schemas.rerouting_schemas import ReroutingAnalysis, ReroutingRequest
-from app.schemas.scenario_schemas import ScenarioFeasibility, ScenarioPlan
+from app.schemas.scenario_schemas import (
+    ScenarioFeasibility,
+    ScenarioPlan,
+    ScenarioRevision,
+)
 from app.services.gemini_service import GeminiNotConfiguredError, GeminiService
 from app.services.supply_chain_repository import (
     PostgresSupplyChainRepository,
@@ -106,6 +131,7 @@ from app.services.supply_chain_repository import (
 )
 from app.tools.base import ToolInputError
 from app.tools.compliance import RecoveryProposal
+from app.utils.tool_recording import ToolCallRecorder, wrap_connector
 
 logger = logging.getLogger(__name__)
 
@@ -157,9 +183,14 @@ def build_agents(
     """Wire the five agents around one shared Gemini service and the connectors.
 
     The Rerouting and Inventory agents are also handed to the Scenario agent,
-    which requests them itself.
+    which requests them itself. External connectors are wrapped in recording
+    proxies so every call an agent actually makes is observable (Step 5); the
+    proxies are transparent, so behaviour is unchanged.
     """
     service = gemini or GeminiService()
+    mapping = wrap_connector("mapping", mapping)
+    carriers = wrap_connector("carriers", carriers)
+    sap = wrap_connector("sap", sap)
     rerouting = ReroutingLogisticsAgent(gemini=service, mapping=mapping, carriers=carriers)
     rebalancing = InventoryRebalancingAgent(gemini=service, sap=sap)
     return SupervisorAgents(
@@ -381,32 +412,256 @@ def _failure(agent_name: str, exc: Exception) -> Dict[str, Any]:
     return update
 
 
+def _last_decision_reason(state: WorkflowState, agent_name: str) -> str:
+    """The supervisor's recorded reason for the delegation now executing."""
+    for entry in reversed(state.get("decisions") or []):
+        if entry.get("action") == agent_name:
+            return str(entry.get("reason") or "")
+    return f"The supervisor selected {agent_name} from the validated workflow state."
+
+
+def _state_revision(state: WorkflowState) -> Optional[ScenarioRevision]:
+    """The pending scenario revision, re-validated from the state."""
+    payload = state.get("scenario_revision")
+    return ScenarioRevision.model_validate(payload) if payload else None
+
+
+def _next_attempt(state: WorkflowState, agent_name: str) -> int:
+    """The ordinal of the task about to be issued to ``agent_name``."""
+    issued = sum(1 for task in (state.get("tasks") or []) if task.get("agent") == agent_name)
+    return issued + 1
+
+
+def _execution(
+    *,
+    task: AgentTask,
+    status: ExecutionStatus,
+    started_at: datetime,
+    started: float,
+    recorder: ToolCallRecorder,
+    result_summary: str,
+    findings: List[str],
+    error: str = "",
+) -> AgentExecution:
+    """Build the execution record from what actually happened."""
+    return AgentExecution(
+        execution_id=f"exec-{task.task_id}",
+        task_id=task.task_id,
+        agent=task.agent,
+        attempt=task.attempt,
+        status=status,
+        started_at=started_at,
+        duration_ms=round(max(0.0, (perf_counter() - started) * 1000.0), 3),
+        tool_calls=recorder.calls,
+        result_summary=result_summary,
+        findings=list(findings),
+        error=error,
+    )
+
+
+def _skipped_update(
+    *,
+    task: AgentTask,
+    started_at: datetime,
+    started: float,
+    recorder: ToolCallRecorder,
+    exc: IntegrationNotConfiguredError,
+) -> Dict[str, Any]:
+    """Degrade gracefully when an agent's optional integration is unavailable."""
+    execution = _execution(
+        task=task,
+        status=ExecutionStatus.SKIPPED,
+        started_at=started_at,
+        started=started,
+        recorder=recorder,
+        result_summary="Task skipped: the integration it needs is not configured.",
+        findings=[],
+        error=f"{type(exc).__name__}: {exc}",
+    )
+    logger.warning("Skipping %s task %s: %s", task.agent, task.task_id, exc)
+    return {
+        "tasks": [task.model_dump(mode="json")],
+        "agent_executions": [execution.model_dump(mode="json")],
+        "skipped_agents": [task.agent],
+        "missing_information": [
+            f"The {task.agent} task was skipped because its integration is unavailable: {exc}"
+        ],
+        "next_action": NODE_SUPERVISOR,
+        "failed_agent": None,
+    }
+
+
+def _screening_update(
+    state: WorkflowState,
+    request: RecoveryRequest,
+    plan: ScenarioPlan,
+) -> Dict[str, Any]:
+    """Evaluate the plan deterministically and open the feedback loop if needed."""
+    transferred = float((state.get("rebalancing") or {}).get("total_transferred_units") or 0.0)
+    screening = evaluate_scenario_plan(
+        request=request, plan=plan, inventory_transfer_units=transferred
+    )
+    update: Dict[str, Any] = {
+        "scenario_screening": screening.model_dump(mode="json"),
+        "scenario_revision": None,
+    }
+
+    if plan.scenarios and not screening_requires_replan(screening):
+        return update
+
+    if not plan.scenarios:
+        if state.get("scenario_revision"):
+            update["status"] = STATUS_NO_COMPLIANT_RECOVERY
+            update["next_action"] = NODE_FINALIZE
+        return update
+
+    used = int(state.get("replan_rounds") or 0)
+    if used >= MAX_REPLAN_ROUNDS:
+        update["status"] = STATUS_NO_COMPLIANT_RECOVERY
+        update["next_action"] = NODE_FINALIZE
+        return update
+
+    previous = _state_revision(state)
+    round_number = used + 1
+    revision = build_scenario_revision(
+        round_number=round_number,
+        evaluations=screening.evaluations,
+        previous_rejected=previous.rejected_scenario_ids if previous else (),
+    )
+    rejected_now = [
+        item.scenario_id
+        for item in screening.evaluations
+        if item.verdict is AuditVerdict.REJECTED
+    ]
+    history = build_history_entry(
+        round_number=round_number,
+        plan=plan,
+        evaluations=screening.evaluations,
+        rejected_scenario_ids=rejected_now,
+    )
+    record = build_replanning_record(
+        round_number=round_number,
+        revision=revision,
+        previous_scenario_ids=[item.scenario_id for item in plan.scenarios],
+    )
+    logger.info(
+        "Screening rejected %s; requesting scenario revision round %s",
+        rejected_now,
+        round_number,
+    )
+    update.update(
+        {
+            "scenario_plan": None,
+            "scenario_revision": revision.model_dump(mode="json"),
+            "scenario_history": [history.model_dump(mode="json")],
+            "replanning": [record.model_dump(mode="json")],
+            "replan_rounds": round_number,
+            "next_action": NODE_SUPERVISOR,
+        }
+    )
+    return update
+
+
 def _agent_node(
     agent_name: str,
     output_key: str,
     run: Callable[[WorkflowState], Any],
+    summarise: Callable[[Any], str],
 ) -> Callable[[WorkflowState], Dict[str, Any]]:
     """Wrap one agent method as a LangGraph node.
 
-    On success the validated result is stored as JSON under ``output_key`` and
-    control returns to the supervisor. On failure the node routes to the retry
-    node, or straight to the terminal state when a retry cannot help.
+    Before the agent runs, the node issues a real :class:`AgentTask` carrying the
+    supervisor's recorded reason. While it runs, a tool recorder captures every
+    tool invocation the agent actually makes. On success the validated result and
+    the execution record are stored as JSON; on failure the node routes to the
+    retry node, or straight to the terminal state when a retry cannot help.
     """
 
     def node(state: WorkflowState) -> Dict[str, Any]:
+        request = _request(state)
+        revision = _state_revision(state) if agent_name == AGENT_SCENARIO else None
+        task = build_agent_task(
+            agent=agent_name,
+            request=request,
+            reason=_last_decision_reason(state, agent_name),
+            step=int(state.get("step") or 0),
+            attempt=_next_attempt(state, agent_name),
+            revision=revision,
+        )
+        recorder = ToolCallRecorder()
+        started_at = datetime.now(timezone.utc)
+        started = perf_counter()
         try:
-            result = run(state)
+            with recorder.activate():
+                result = run(state)
+        except IntegrationNotConfiguredError as exc:
+            if agent_name == AGENT_REBALANCING:
+                return _skipped_update(
+                    task=task,
+                    started_at=started_at,
+                    started=started,
+                    recorder=recorder,
+                    exc=exc,
+                )
+            failure = _failure(agent_name, exc)
+            execution = _execution(
+                task=task,
+                status=ExecutionStatus.FAILED,
+                started_at=started_at,
+                started=started,
+                recorder=recorder,
+                result_summary="Execution failed.",
+                findings=[],
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            failure.update(
+                {
+                    "tasks": [task.model_dump(mode="json")],
+                    "agent_executions": [execution.model_dump(mode="json")],
+                }
+            )
+            return failure
         except Exception as exc:  # noqa: BLE001 - the error node owns the policy
-            return _failure(agent_name, exc)
+            failure = _failure(agent_name, exc)
+            execution = _execution(
+                task=task,
+                status=ExecutionStatus.FAILED,
+                started_at=started_at,
+                started=started,
+                recorder=recorder,
+                result_summary="Execution failed.",
+                findings=[],
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            failure.update(
+                {
+                    "tasks": [task.model_dump(mode="json")],
+                    "agent_executions": [execution.model_dump(mode="json")],
+                }
+            )
+            return failure
 
+        execution = _execution(
+            task=task,
+            status=ExecutionStatus.COMPLETED,
+            started_at=started_at,
+            started=started,
+            recorder=recorder,
+            result_summary=summarise(result),
+            findings=_gaps(result),
+        )
         update: Dict[str, Any] = {
             output_key: result.model_dump(mode="json"),
             "completed_agents": [agent_name],
             "missing_information": _gaps(result),
             "next_action": NODE_SUPERVISOR,
             "failed_agent": None,
+            "tasks": [task.model_dump(mode="json")],
+            "agent_executions": [execution.model_dump(mode="json")],
         }
         update.update(_extras(result))
+        if isinstance(result, ScenarioPlan):
+            update.update(_screening_update(state, request, result))
         logger.info("Agent %s completed for event %s", agent_name, _event_id(state))
         return update
 
@@ -420,23 +675,51 @@ def build_agent_nodes(
     """Wrap the five agents as the five graph nodes."""
     return {
         AGENT_SENSING: _agent_node(
-            AGENT_SENSING, "assessment", lambda state: agents.sensing.assess(_request(state).disruption_report)
+            AGENT_SENSING,
+            "assessment",
+            lambda state: agents.sensing.assess(_request(state).disruption_report),
+            lambda result: (
+                f"{result.event_id}: severity {result.severity.value}, "
+                f"{len(result.affected_shipments)} linked shipment(s)"
+            ),
         ),
         AGENT_REROUTING: _agent_node(
             AGENT_REROUTING,
             "rerouting",
             lambda state: agents.rerouting.analyse(_rerouting_request(_request(state))),
+            lambda result: (
+                f"{len(result.ranked_routes)} route(s), recommended "
+                f"{result.recommended_route_id or 'none'}"
+            ),
         ),
         AGENT_REBALANCING: _agent_node(
             AGENT_REBALANCING,
             "rebalancing",
             lambda state: agents.rebalancing.plan(_inventory_request(_request(state))),
+            lambda result: (
+                f"shortage {result.shortage_before} -> {result.shortage_after} unit(s), "
+                f"{len(result.transfer_recommendations)} transfer(s)"
+            ),
         ),
         AGENT_SCENARIO: _agent_node(
-            AGENT_SCENARIO, "scenario_plan", lambda state: agents.scenario.plan(_request(state).scenario_request)
+            AGENT_SCENARIO,
+            "scenario_plan",
+            lambda state: agents.scenario.plan(
+                _request(state).scenario_request, _state_revision(state)
+            ),
+            lambda result: (
+                f"{len(result.scenarios)} scenario(s), recommended "
+                f"{result.recommended_scenario_id or 'none'}"
+                + (f", revision {result.revision_round}" if result.revision_round else "")
+            ),
         ),
         AGENT_COMPLIANCE: _agent_node(
-            AGENT_COMPLIANCE, "audit_report", lambda state: agents.compliance.audit(_audit_request(_request(state), state))
+            AGENT_COMPLIANCE,
+            "audit_report",
+            lambda state: agents.compliance.audit(_audit_request(_request(state), state)),
+            lambda result: (
+                f"verdict {result.verdict.value}, {len(result.violations)} violation(s)"
+            ),
         ),
     }
 
@@ -471,6 +754,12 @@ def _scenario_needs_revision(plan: Dict[str, Any]) -> bool:
     return str(recommended.get("feasibility") or "") != ScenarioFeasibility.FEASIBLE.value
 
 
+def _screening_passed(state: WorkflowState) -> bool:
+    """Whether the last deterministic screening found a compliant recommendation."""
+    verdict = (state.get("scenario_screening") or {}).get("recommended_verdict")
+    return bool(verdict) and str(verdict) != AuditVerdict.REJECTED.value
+
+
 def _decide(state: WorkflowState) -> Tuple[str, str, Optional[str]]:
     """The supervisor's routing decision, as (next node, reason, status).
 
@@ -495,6 +784,18 @@ def _decide(state: WorkflowState) -> Tuple[str, str, Optional[str]]:
     plan = state.get("scenario_plan")
     rerouting = state.get("rerouting")
     rebalancing = state.get("rebalancing")
+    skipped = state.get("skipped_agents") or []
+
+    # 3a. Did deterministic screening reject the last plan?
+    revision = _state_revision(state)
+    if revision is not None and plan is None:
+        return (
+            AGENT_SCENARIO,
+            f"Deterministic screening rejected {', '.join(revision.rejected_scenario_ids) or 'the previous recommendation'}, "
+            f"so the supervisor requests revision round {revision.round} excluding those "
+            f"alternatives before auditing.",
+            None,
+        )
 
     # 3. Are additional scenarios required?
     if required and plan is None:
@@ -515,15 +816,20 @@ def _decide(state: WorkflowState) -> Tuple[str, str, Optional[str]]:
         )
 
     # 2. Is an inventory analysis required?
-    if not required and scenario.inventory is not None and rebalancing is None:
+    if (
+        not required
+        and scenario.inventory is not None
+        and rebalancing is None
+        and AGENT_REBALANCING not in skipped
+    ):
         return (
             AGENT_REBALANCING,
             "The caller supplied an inventory request, so a rebalancing analysis is required.",
             None,
         )
 
-    # 4. Does a scenario need a revision?
-    if plan is not None and _scenario_needs_revision(plan):
+    # 4. Does a scenario need an independent logistics revision?
+    if plan is not None and _scenario_needs_revision(plan) and not _screening_passed(state):
         if rerouting is None and int(state.get("revision_rounds") or 0) < 1:
             return (
                 AGENT_REROUTING,
@@ -754,6 +1060,17 @@ def _outcome_text(
             f"that could be recommended.{detail}",
         )
 
+    if status == STATUS_NO_COMPLIANT_RECOVERY:
+        rounds = int(state.get("replan_rounds") or 0)
+        detail = (
+            f" after {rounds} replanning round(s)" if rounds else ""
+        )
+        return (
+            f"{event_id}: no compliant recovery available",
+            "Every recovery alternative was rejected by deterministic compliance, budget or "
+            f"approval validation{detail}.",
+        )
+
     if status == STATUS_ITERATION_LIMIT:
         return (
             f"{event_id}: supervisor stopped at its iteration bound",
@@ -826,6 +1143,10 @@ def finalize(state: WorkflowState) -> Dict[str, Any]:
 
     headline, summary = _outcome_text(status, request, state, facts)
     delegated = list(state.get("completed_agents") or [])
+    executions = [
+        AgentExecution.model_validate(item) for item in (state.get("agent_executions") or [])
+    ]
+    screening_payload = state.get("scenario_screening")
     recommendation = RecoveryRecommendation(
         event_id=request.disruption_report.derive_event_id(),
         status=status,
@@ -845,6 +1166,30 @@ def finalize(state: WorkflowState) -> Dict[str, Any]:
         errors=list(state.get("errors") or []),
         evidence=_collect_evidence(state),
         iterations=len(delegated),
+        tasks=[
+            AgentTask.model_validate(item) for item in (state.get("tasks") or [])
+        ],
+        agent_executions=executions,
+        tool_calls=[
+            invocation
+            for execution in executions
+            for invocation in execution.tool_calls
+        ],
+        scenario_screening=(
+            ScenarioScreening.model_validate(screening_payload)
+            if screening_payload
+            else None
+        ),
+        scenario_history=[
+            ScenarioHistoryEntry.model_validate(item)
+            for item in (state.get("scenario_history") or [])
+        ],
+        replanning=[
+            ReplanningRecord.model_validate(item)
+            for item in (state.get("replanning") or [])
+        ],
+        replanning_rounds=int(state.get("replan_rounds") or 0),
+        skipped_agents=list(dict.fromkeys(state.get("skipped_agents") or [])),
     )
     logger.info("Workflow finished for %s with status %s", recommendation.event_id, status)
     return {"recommendation": recommendation.model_dump(mode="json"), "status": status}
