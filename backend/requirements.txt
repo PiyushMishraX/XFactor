@@ -1,0 +1,31 @@
+# X FACTOR — backend dependencies
+# Verified against Python 3.14 on Windows.
+
+# --- Web framework ---
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+
+# --- Configuration / validation ---
+pydantic>=2.9,<3.0
+pydantic-settings>=2.4,<3.0
+python-dotenv>=1.0
+
+# --- Database ---
+sqlalchemy>=2.0,<3.0
+psycopg2-binary>=2.9,<3.0
+
+# --- HTTP client (external API connectors, added in Step 2) ---
+httpx>=0.27,<1.0
+
+# --- Orchestration (LangGraph supervisor, added in Step 4) ---
+langgraph>=1.0,<2.0
+# PostgreSQL-backed checkpoint persistence for the supervisor workflow.
+langgraph-checkpoint-postgres>=3.0,<4.0
+# The checkpoint adapter speaks psycopg 3, not psycopg2, and needs a libpq wrapper.
+psycopg[binary]>=3.2,<4.0
+
+# --- Logging ---
+python-json-logger>=2.0
+
+# --- Testing ---
+pytest>=8.0
