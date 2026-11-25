@@ -1,0 +1,22 @@
+# Never copy credentials or local artefacts into an image.
+.env
+.env.*
+!.env.example
+.venv
+venv
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+tests/
+docs/
+pytest.ini
+
+*.log
+.git
+.gitignore

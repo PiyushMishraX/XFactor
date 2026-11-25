@@ -1,0 +1,54 @@
+%% X FACTOR supervisor graph — generated from the compiled LangGraph.
+%% Regenerate with: python -c "from app.orchestration.workflow import ...; print(graph.get_graph().draw_mermaid())"
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	supervisor(supervisor)
+	disruption_sensing(disruption_sensing)
+	rerouting_logistics(rerouting_logistics)
+	inventory_rebalancing(inventory_rebalancing)
+	scenario_planning(scenario_planning)
+	compliance_audit(compliance_audit)
+	approval_gate(approval_gate)
+	error_handler(error_handler)
+	finalize(finalize)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> supervisor;
+	approval_gate -.-> finalize;
+	approval_gate -.-> scenario_planning;
+	compliance_audit -.-> error_handler;
+	compliance_audit -.-> finalize;
+	compliance_audit -.-> supervisor;
+	disruption_sensing -.-> error_handler;
+	disruption_sensing -.-> finalize;
+	disruption_sensing -.-> supervisor;
+	error_handler -.-> compliance_audit;
+	error_handler -.-> disruption_sensing;
+	error_handler -.-> finalize;
+	error_handler -.-> inventory_rebalancing;
+	error_handler -.-> rerouting_logistics;
+	error_handler -.-> scenario_planning;
+	inventory_rebalancing -.-> error_handler;
+	inventory_rebalancing -.-> finalize;
+	inventory_rebalancing -.-> supervisor;
+	rerouting_logistics -.-> error_handler;
+	rerouting_logistics -.-> finalize;
+	rerouting_logistics -.-> supervisor;
+	scenario_planning -.-> error_handler;
+	scenario_planning -.-> finalize;
+	scenario_planning -.-> supervisor;
+	supervisor -.-> approval_gate;
+	supervisor -.-> compliance_audit;
+	supervisor -.-> disruption_sensing;
+	supervisor -.-> finalize;
+	supervisor -.-> inventory_rebalancing;
+	supervisor -.-> rerouting_logistics;
+	supervisor -.-> scenario_planning;
+	finalize --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

@@ -1,9 +1,11 @@
+import { useEffect, useState } from 'react'
+
 import KpiCard from '../components/KpiCard'
 import PageHeader from '../components/PageHeader'
 import StatusBadge from '../components/StatusBadge'
 import { EmptyState, ErrorState, LoadingState } from '../components/StatePanel'
 import { useAsyncData } from '../hooks/useAsyncData'
-import { getDashboardOverview } from '../services/api'
+import { getActiveWorkflow, getDashboardOverview, startAgents } from '../services/api'
 import { titleCase, when } from '../utils/format'
 
 const PIPELINE = [
@@ -14,8 +16,152 @@ const PIPELINE = [
   ['Execute', 'Only an approved plan is executed, idempotently'],
 ]
 
+const IDLE_START = { phase: 'idle', result: null, error: '' }
+
+function StartPanel({ active, onOpenThread, onNavigate, onFinished }) {
+  const [start, setStart] = useState(IDLE_START)
+
+  const running = start.phase === 'running' || Boolean(active?.running)
+  const otherRun = active?.running && start.phase !== 'running'
+
+  async function handleStart() {
+    setStart({ phase: 'running', result: null, error: '' })
+    try {
+      const result = await startAgents()
+      setStart({ phase: 'done', result, error: '' })
+    } catch (err) {
+      setStart({ phase: 'error', result: null, error: err.message })
+    } finally {
+      onFinished()
+    }
+  }
+
+  const result = start.result
+
+  return (
+    <section className="panel panel--accent">
+      <div className="panel__head">
+        <div>
+          <h2>Start one agent run</h2>
+          <p>
+            Runs the validated Red Sea scenario through all five agents exactly once. The
+            backend admits one run at a time, so repeated clicks and extra tabs cannot
+            overload the agents or the Gemini quota.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="button button--ok"
+          onClick={handleStart}
+          disabled={running}
+        >
+          {start.phase === 'running'
+            ? 'Agents running…'
+            : otherRun
+              ? 'Another run is in flight'
+              : 'Start agents'}
+        </button>
+      </div>
+
+      {start.phase === 'running' && (
+        <p className="muted" role="status">
+          The supervisor is delegating to the five agents. This can take up to a minute; the
+          result will appear here and in Agent Activity.
+        </p>
+      )}
+
+      {otherRun && (
+        <p className="muted" role="status">
+          Thread <span className="mono">{active.thread_id}</span> is already running. Wait for it
+          to finish before starting another run.
+        </p>
+      )}
+
+      {start.phase === 'error' && <p className="error">{start.error}</p>}
+
+      {result && (
+        <div className="outcome" role="status">
+          <div className="detail__head">
+            <div>
+              <h3 className="subtitle">Run output</h3>
+              <strong className="mono">{result.thread_id}</strong>
+            </div>
+            <StatusBadge status={result.status ?? 'completed'} />
+          </div>
+          <div className="row">
+            <span className="row__label">Awaiting approval</span>
+            <span className="row__value">{result.awaiting_approval ? 'yes' : 'no'}</span>
+          </div>
+          <div className="row">
+            <span className="row__label">Agents executed</span>
+            <span className="row__value">{result.agent_executions?.length ?? 0}</span>
+          </div>
+          {result.proposal_version && (
+            <div className="row">
+              <span className="row__label">Proposal version</span>
+              <span className="row__value">{result.proposal_version}</span>
+            </div>
+          )}
+          {result.recommendation?.headline && (
+            <div className="row">
+              <span className="row__label">Recommendation</span>
+              <span className="row__value">{result.recommendation.headline}</span>
+            </div>
+          )}
+          {result.errors?.length > 0 && (
+            <ul className="bullets bullets--error">
+              {result.errors.map((message) => (
+                <li key={message}>{message}</li>
+              ))}
+            </ul>
+          )}
+          <div className="actions">
+            <button
+              type="button"
+              className="button"
+              onClick={() => onOpenThread(result.thread_id, 'agents')}
+            >
+              Open agent activity
+            </button>
+            {result.awaiting_approval && (
+              <button
+                type="button"
+                className="button button--warn"
+                onClick={() => onNavigate('approvals')}
+              >
+                Open Approval Center
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
 export default function Overview({ onOpenThread, onNavigate }) {
   const { status, data, error, refresh } = useAsyncData(getDashboardOverview)
+  const [active, setActive] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function pollActive() {
+      try {
+        const body = await getActiveWorkflow()
+        if (!cancelled) setActive(body)
+      } catch {
+        // The slot status is advisory; a failed poll must not block the dashboard.
+      }
+    }
+
+    pollActive()
+    const timer = setInterval(pollActive, 4000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [])
 
   if (status === 'loading' && !data) return <LoadingState />
   if (status === 'error') return <ErrorState message={error} onRetry={refresh} />
@@ -35,6 +181,18 @@ export default function Overview({ onOpenThread, onNavigate }) {
             Refresh
           </button>
         }
+      />
+
+      <StartPanel
+        active={active}
+        onOpenThread={onOpenThread}
+        onNavigate={onNavigate}
+        onFinished={() => {
+          refresh()
+          getActiveWorkflow()
+            .then(setActive)
+            .catch(() => {})
+        }}
       />
 
       <section className="kpi-grid" aria-label="Platform indicators">

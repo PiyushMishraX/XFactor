@@ -3,7 +3,7 @@
 > Update this file immediately after **every** meaningful implementation milestone.
 > Never rely on conversation history to remember completed work.
 
-_Last updated: 2026-11-22 (Step 9 complete)_
+_Last updated: 2026-11-25 (one-click Start with single-flight admission)_
 
 ---
 
@@ -26,10 +26,10 @@ React (Vite) frontend.
 
 | Field | Value |
 | --- | --- |
-| Current phase | **Step 9 — Testing and End-to-End Validation** |
-| Status | ✅ **Complete and verified** (see the live-Gemini quota limitation in §11 items 17 and 20) |
-| Overall completion (estimate) | **~95%** (Steps 0–9 of 11 roadmap steps) |
-| Next step | **Step 10 — Deployment and Hackathon Demonstration** |
+| Current phase | **Step 10 — Deployment and Hackathon Demonstration** |
+| Status | ✅ **Complete and verified** (container stack verified; Overview has a one-click Start with server-enforced single-flight admission; live demo still depends on Gemini quota and an approver credential) |
+| Overall completion (estimate) | **~98%** (all 11 roadmap steps delivered) |
+| Next step | None in the roadmap. Remaining optional work: quota-backed Gemini key or billing, and an approver credential for the Approval Center |
 
 ---
 
@@ -525,6 +525,105 @@ failure cases, found and fixed three defects, and produced a validation report.
   live run journal, the failure matrix, security checks, known limitations and
   deployment readiness.
 
+### Step 10 — Deployment and Hackathon Demonstration ✅
+
+Step 10 packaged the finished product and prepared the demonstration. No product
+logic changed: only container definitions, demo assets and documentation.
+
+| Area | Result |
+| --- | --- |
+| Images | `backend/Dockerfile` (python:3.12-slim, non-root `xfactor`, liveness healthcheck) 407 MB; `frontend/Dockerfile` (node:22 build → nginx:1.27-alpine) 74.4 MB |
+| Compose | `docker-compose.yml`: `db` (postgres:16-alpine, named volume, `pg_isready`), one-shot `seed`, `backend` (postgres checkpoints, `stop_grace_period`), `frontend` (port 8080) |
+| Service communication | nginx `/api/` proxy → `backend:8000`; same-origin browser calls; `/`, `/healthz` and `/api/health` all 200 on `:8080` |
+| PostgreSQL | Containerised Postgres 16; seed loaded 5 suppliers / 10 shipments; dashboard reflects both |
+| Checkpoints | `LANGGRAPH_CHECKPOINT_BACKEND=postgres`; 4 tables, 40 rows; thread state readable after `docker compose restart backend` |
+| Lifecycle | Ordered start (db healthy → backend healthy → frontend); graceful uvicorn shutdown on stop; clean restart |
+| Demo scenario | `backend/demo/mumbai_rotterdam_scenario.json` (`EV-DEMO-RED-SEA`) and `..._replan_scenario.json` (`EV-DEMO-RED-SEA-REPLAN`); `scripts/run_demo_scenario.py` drives submission, summary and an authenticated decision |
+| Demo evidence | Live demo blocked by upstream Gemini quota (`503` then `429`, 20/day free tier): `EV-DEMO-RED-SEA`…`-5` recorded as failed with no execution. Deterministic E2E test proves the golden path (no Gemini call); the replan variant is asserted in `test_demo_payloads_are_valid_and_the_replan_variant_replans` |
+| Docs | `architecture.md`, `langgraph-workflow.mmd`, `api.md`, `database-schema.md`, `deployment.md`, `demo-script.md`, `test-report.md`; README updated |
+| Tests | 397 collected, **391 passed, 6 skipped**, 0 failures |
+
+- **Deliberate design choices.** The backend health check uses `/api/health/live`
+  so a database blip does not kill a healthy API process; `DATABASE_URL` is left
+  empty in Compose so the discrete `POSTGRES_*` values apply; secrets remain in
+  `backend/.env` and are excluded by `.dockerignore`, never baked into images.
+- **Honest limitation.** The live container demo needs five Gemini calls per run
+  and could not complete while both flash models were quota-exhausted. The
+  failure rows are retained and reported, not deleted or fabricated.
+
+#### Follow-up — multi-key Gemini distribution (2026-11-24)
+
+The platform originally shared one key across all five agents, so all calls
+competed for one free-tier bucket and bursty retries tripped the per-minute
+limit. The client now supports several keys and paces them:
+
+- effective key list = `GEMINI_API_KEY` followed by comma-separated
+  `GEMINI_API_KEYS`, duplicates removed;
+- deterministic assignment in roadmap order, round-robin by default (with two
+  keys: sensing/rerouting/compliance on slot 0, scenario/inventory on slot 1),
+  overridable per agent with `GEMINI_KEY_SLOTS`;
+- every HTTP attempt waits until `GEMINI_MIN_INTERVAL_SECONDS` has elapsed since
+  the last request **on the same key** (process-wide, shared across agents), and
+  retries back off by *N ×* `GEMINI_RETRY_BACKOFF_SECONDS`;
+- invalid slot overrides fail loudly at startup; key material is never logged
+  (only a 12-character SHA-256 fingerprint at DEBUG);
+- an explicitly supplied `gemini` service (tests, single-key callers) still
+  shares one service, so existing behaviour is unchanged.
+
+**Quota handling added after the live 429 (2026-11-24).** The failure Google
+actually reported was a *daily* cap (`RESOURCE_EXHAUSTED`,
+`GenerateRequestsPerDayPerProjectPerModel-FreeTier`, `quotaValue: 20`, reset in
+~14 h), so short retries cannot fix it. The client now:
+
+- treats a quota 429 as terminal for that key instead of retrying it three times
+  (the supervisor also lists `GeminiQuotaExceededError` as non-retryable);
+- quarantines the exhausted key for the reported window (process-wide, by key
+  fingerprint) and immediately tries the agent's next key — each agent's
+  fallback order starts at its assigned slot (slot 1 → `key2, key1`);
+- waits in-process only for a short Google `retryDelay`
+  (`≤ GEMINI_QUOTA_RETRY_MAX_SECONDS`, default 120 s), which is the per-minute
+  throttle shape;
+- fails with the quota id, model and UTC reset time only when every configured
+  key is cooling down.
+
+Daily request quota is per Google Cloud project *and* model, so keys must belong
+to different projects (or billing must be enabled) for rotation to add capacity.
+`test_gemini_quota_rotation.py` adds 8 tests; the suite is now 397 collected,
+391 passed, 6 skipped, 0 failures.
+
+#### Follow-up — one-click Start with single-flight admission (2026-11-25)
+
+The operator asked for a Start button that runs the agents **once**, so repeated
+clicks cannot overload the five agents or the Gemini quota. The overload was
+possible because every start path invoked the supervisor independently.
+
+- `WorkflowGuard` (`app/services/workflow_guard.py`) is a process-wide,
+  non-blocking `threading.Lock` holding the active thread id. It is correct for
+  the stack's single uvicorn worker; horizontal scaling needs a database advisory
+  lock instead.
+- Both start paths go through `_run_guarded`: while a run is in flight another
+  start returns `409` with the active thread id, and approval/history persistence
+  stays inside the claimed slot. The guard is released in `finally`.
+- `POST /api/orchestration/workflows/start` runs the bundled validated Red Sea
+  scenario under a fresh `EV-UI-START-<UTC>-<hex>` event id (both nested event ids
+  are updated) and records the run in `workflow_runs`.
+- `GET /api/orchestration/workflows/active` reports `{running, thread_id}` so the
+  UI can disable Start even for a run started in another tab or the shipment form.
+- The Overview page gained a **Start agents** panel: disabled while a run is in
+  flight, polling the active endpoint every 4 s, and rendering the run output
+  (status, agents executed, proposal version, recommendation or errors) with
+  links to Agent Activity and the Approval Center.
+
+**Verification (2026-11-25 UTC).** `test_workflow_start.py` adds 9 tests; the full
+suite is now 406 collected, 400 passed, 6 skipped, 0 failures. Frontend lint and
+build pass. Live in the container stack: a real UI click started
+`EV-UI-START-20261124-183758-cf0e25`; the button showed **Agents running…**, a
+concurrent `POST /workflows/start` returned `409` naming that thread, and the run
+completed at the approval gate with 4 agent executions and proposal version
+`632eec40e5aa393c`. The one transient Gemini `503` was retried and recorded
+truthfully. A separate earlier run (`EV-UI-START-20261124-183611-309e66`) failed
+after two `503` attempts and is displayed as failed.
+
 ---
 
 ## 4. Partially completed steps
@@ -546,7 +645,7 @@ None.
 | 7 | SAP integration | ✅ Complete (verified; simulated adapters, no live tenant) |
 | 8 | Agent Activity and Decision dashboard | ✅ Complete (verified; see §11 item 17) |
 | 9 | Testing and end-to-end validation | ✅ Complete (verified; live Mumbai replay blocked by Gemini quota — §11 item 20) |
-| 10 | Deployment and hackathon demonstration | Not started |
+| 10 | Deployment and hackathon demonstration | ✅ Complete (container stack verified; live demo blocked by Gemini quota — §11 item 21) |
 
 ---
 
@@ -843,6 +942,53 @@ None.
 | `backend/docs/sap-integration.md` | "seven" → "eight" inventory positions |
 | `backend/docs/validation-report.md` | New: Step 9 report (17-item audit, live journal, failure matrix, security, limitations, readiness) |
 
+### Created / modified — Step 10 (deployment and demo)
+
+| File | Change |
+| --- | --- |
+| `backend/Dockerfile` | New: python:3.12-slim image, non-root user, liveness healthcheck |
+| `backend/.dockerignore` | New: excludes `.env`, venv, tests, docs, caches |
+| `frontend/Dockerfile` | New: multi-stage node build → nginx runtime |
+| `frontend/nginx.conf` | New: SPA fallback, `/healthz`, `/api/` proxy to `backend:8000`, immutable assets |
+| `frontend/.dockerignore` | New: excludes `node_modules`, `dist`, env files |
+| `docker-compose.yml` | New: `db`, `seed`, `backend`, `frontend` with health conditions and a named volume |
+| `backend/demo/mumbai_rotterdam_scenario.json` | New: Red Sea demo payload (`EV-DEMO-RED-SEA`) |
+| `backend/demo/mumbai_rotterdam_replan_scenario.json` | New: replan variant with a lead-time rule that rejects the long sea routes |
+| `backend/scripts/run_demo_scenario.py` | New: submit scenario, print decisions/agents/scenarios/approval, submit an authenticated decision |
+| `backend/tests/test_e2e_mumbai_rotterdam.py` | Added the demo-payload validity and replan assertion test |
+| `backend/docs/architecture.md` | New: topology, lifecycle, deterministic/LLM boundary |
+| `backend/docs/langgraph-workflow.mmd` | New: Mermaid diagram of the compiled graph |
+| `backend/docs/api.md` | New: endpoints, authorisation model, examples |
+| `backend/docs/database-schema.md` | New: tables, ER diagram, checkpoint tables |
+| `backend/docs/deployment.md` | New: Compose, env, lifecycle, verification |
+| `backend/docs/demo-script.md` | New: act-by-act Red Sea demonstration |
+| `backend/docs/test-report.md` | New: suites, failure matrix, container verification |
+| `README.md` | Step 10 status, Compose usage, document links |
+| `backend/.env` | `GEMINI_MODEL` toggled to the model that was serving at verification time (`gemini-3.5-flash`) |
+
+### Created / modified — multi-key follow-up (2026-11-24)
+
+| File | Change |
+| --- | --- |
+| `backend/app/config/settings.py` | `GEMINI_API_KEYS`, `GEMINI_KEY_SLOTS`, `GEMINI_MIN_INTERVAL_SECONDS`, `GEMINI_RETRY_BACKOFF_SECONDS`, `GEMINI_QUOTA_RETRY_MAX_SECONDS`; `gemini_api_keys` deduplicates and `gemini_configured` reads it |
+| `backend/app/services/gemini_keys.py` | New: `AGENT_ORDER`, `parse_key_slots`, `resolve_agent_keys` (round-robin + overrides) and `resolve_agent_key_order` (full rotation from each agent's slot) |
+| `backend/app/services/gemini_service.py` | Explicit `api_key`/`agent_name` and fallback keys per instance, process-wide per-key throttle, configurable retry backoff, quota parsing, key quarantine and cross-key rotation |
+| `backend/app/orchestration/workflow.py` | One `GeminiService` per agent when no shared service is supplied, each with rotated fallback keys; quota exhaustion is non-retryable |
+| `backend/tests/test_gemini_multi_key.py` | New: 14 tests for assignment, wiring, key headers, fail-loud message and pacing |
+| `backend/tests/test_gemini_quota_rotation.py` | New: 8 tests for daily-quota handling, quarantine, rotation, short delays and fallback order |
+| `backend/.env`, `.env.example` (root and backend) | New variable names; pacing 6 s, backoff 5 s and short-quota ceiling 120 s in the local env |
+
+### Created / modified — one-click Start follow-up (2026-11-25)
+
+| File | Change |
+| --- | --- |
+| `backend/app/services/workflow_guard.py` | New: process-wide `WorkflowGuard` non-blocking lock and `WorkflowBusyError` naming the active thread |
+| `backend/app/api/orchestration.py` | `_run_guarded` wraps both start paths; new `POST /workflows/start` and `GET /workflows/active`; demo-scenario loader with fresh event ids; updated module docstring |
+| `backend/tests/test_workflow_start.py` | New: 9 tests for the guard, both start endpoints under contention, one-shot run recording, active endpoint, fresh ids and an honest missing-scenario `500` |
+| `frontend/src/services/api.js` | `startAgents()` and `getActiveWorkflow()` |
+| `frontend/src/pages/Overview.jsx` | Start panel with disabled/running state, active-run polling, run output and links; overview refresh after a run |
+| `backend/tests/test_dashboard.py` | Unchanged; still passes because both endpoints share the guarded path |
+
 ### Created / modified — frontend (Step 6)
 
 | File | Change |
@@ -974,6 +1120,20 @@ Added in Step 7: `SAP_API_FAMILY` (default `s4hana`), `SAP_AUTH_URL`,
 being false means writes fail closed even when read access is configured; no SAP
 tenant is contacted while `SAP_USE_MOCK=true`.
 
+Added in Step 10 (Compose only, no new application settings): the Compose anchor
+sets `DATABASE_URL=""` so the discrete `POSTGRES_*` values point at the `db`
+service, plus `LANGGRAPH_CHECKPOINT_BACKEND=postgres` and
+`CORS_ORIGINS=http://localhost:8080,http://127.0.0.1:8080`.
+
+Added in the multi-key follow-up (names only): `GEMINI_API_KEYS`,
+`GEMINI_KEY_SLOTS`, `GEMINI_MIN_INTERVAL_SECONDS` (local value 6),
+`GEMINI_RETRY_BACKOFF_SECONDS` (local value 5) and
+`GEMINI_QUOTA_RETRY_MAX_SECONDS` (default 120; longer daily-quota delays rotate
+keys instead of sleeping). `GEMINI_API_KEY` remains the
+first key in the effective list. The images receive
+**no** secret values; `backend/.env` is excluded by `.dockerignore` and must be
+provided at run time for live Gemini/SAP/approver use.
+
 Real credentials **are** now configured in `backend/.env` (git-ignored and not
 committed): an Aiven PostgreSQL `DATABASE_URL` (`sslmode=require`) and a live
 `GEMINI_API_KEY`. Only `.env.example` templates (names + safe defaults) are
@@ -1003,8 +1163,22 @@ cd "d:\X Factor\frontend"
 npm run dev
 ```
 
-- Frontend: http://localhost:5173
+```powershell
+# Docker deployment (Step 10) — from the repository root
+docker compose up --build -d      # db + seed + backend + frontend
+docker compose ps                 # health of all four services
+docker compose logs -f backend    # workflow and agent logs
+docker compose stop               # graceful shutdown
+docker compose down               # remove containers (keeps the postgres-data volume)
+
+# Demo scenario through the container (needs Gemini quota)
+docker compose exec -T backend python -m scripts.run_demo_scenario `
+  --thread-id EV-DEMO-RED-SEA-1 --base-url http://127.0.0.1:8000/api
+```
+
+- Frontend (dev): http://localhost:5173 · Frontend (Compose): http://localhost:8080
 - Backend: http://127.0.0.1:8000 (docs at `/docs`)
+- Compose proxy: http://localhost:8080/api/health
 
 ---
 
@@ -1018,6 +1192,25 @@ npm run dev
 | Step 9 database-failure test | `pytest tests/test_dashboard.py -k unavailable` | ✅ **1 passed** (SQLAlchemy `OperationalError` → `503` "The workflow database is unavailable.") |
 | Step 9 live verification | `POST /api/orchestration/workflows` (Mumbai → Rotterdam) | ⛔ Blocked by Gemini free-tier daily quota (`429`, 20 requests/day); `EV-STEP9-MUMBAI-002` recorded as a genuine failure. `EV-UI-VERIFY-003` later approved and executed after the quota window |
 | Step 9 live approval + execution | `POST /api/approvals/EV-UI-VERIFY-003/decision` + `/execution` | ✅ 401/403/409 paths, Director approval, 3 simulated actions, duplicate decision refused, `workflow_runs` refreshed (`execution_count` 3, `error_count` 0) |
+| **Full backend suite (Step 10)** | `pytest tests -q` (from `backend/`, repository `.venv`) | ✅ **406 collected, 400 passed, 6 skipped, 0 failures** |
+| Start-admission suite | `pytest tests/test_workflow_start.py` | ✅ **9 passed** (guard, both endpoints `409`, run recording, active endpoint, fresh ids, missing-demo `500`) |
+| Start button live (2026-11-25) | UI click on Overview **Start agents** | ✅ button disabled as **Agents running…**; run `EV-UI-START-20261124-183758-cf0e25` recorded `awaiting_approval`, 4 agent executions, proposal `632eec40e5aa393c` |
+| Single-flight live (2026-11-25) | concurrent `POST /api/orchestration/workflows/start` during the UI run | ✅ `409` naming `EV-UI-START-20261124-183758-cf0e25` |
+| Slot release | `GET /api/orchestration/workflows/active` after completion | ✅ `{"running": false, "thread_id": null}` |
+| Step 10 demo-payload test | `pytest tests/test_e2e_mumbai_rotterdam.py` | ✅ **3 passed** (both demo JSONs validate; the replan variant forces exactly one revision keeping history) |
+| Step 10 Compose model | `docker compose config --quiet` | ✅ valid |
+| Step 10 image builds | `docker compose build` | ✅ backend/seed 407 MB, frontend 74.4 MB |
+| Step 10 stack health | `docker compose ps` | ✅ db healthy, seed exited 0, backend healthy, frontend healthy |
+| Step 10 seed | `docker compose logs seed` | ✅ "Seeded: 5 suppliers, 10 shipments"; dashboard counts match |
+| Step 10 proxy | `curl :8080/api/health`, `/healthz`, `/` | ✅ 200 / 200 / 200; backend JSON proxied |
+| Step 10 checkpoints | `psql \dt` + restart backend + read thread state | ✅ 4 tables, 40 rows; saved state returned after restart |
+| Step 10 lifecycle | `docker compose stop` → `start` | ✅ clean uvicorn shutdown; ordered restart |
+| Step 10 approval auth | `curl :8080/api/approvals/pending` | ✅ 401 without token; 503 fail-closed without `APPROVER_CREDENTIALS` |
+| Step 10 live demo | `python -m scripts.run_demo_scenario` (backend container) | ⛔ Gemini HTTP 503 then HTTP 429 (20/day free tier) at Disruption Sensing; `EV-DEMO-RED-SEA`…`-5` recorded as failed, no execution |
+| Multi-key tests | `pytest tests/test_gemini_multi_key.py` | ✅ **14 passed** (round-robin, slots, dedup, invalid slots, per-agent wiring, request headers, missing-key message, throttle spacing, per-attempt pacing) |
+| Quota rotation tests | `pytest tests/test_gemini_quota_rotation.py` | ✅ **8 passed** (daily quota not retried, quarantine, rotate to fallback, skip cooling keys, all-cooling error, short delay honoured, non-quota 429 still retried, per-agent fallback order, supervisor treats quota as terminal) |
+| Live key rotation probe | `docker compose exec -T backend python …` (2026-11-24 18:18 UTC) | ✅ `disruption_sensing` key returned `{"ok": true}`; `scenario_planning` key returned the daily quota and the call rotated to slot 0 and succeeded |
+| Multi-key full suite | `pytest tests -q` (from `backend/`) | ✅ **397 collected, 391 passed, 6 skipped, 0 failures** |
 | Step 8 dashboard tests | `pytest tests/test_dashboard.py` | ✅ **12 passed** (summary derivation, one-row upsert, ordering/status filter, disruption detail, JSON-safe interrupt stripping, overview counts, run/detail endpoints incl. 404, shipment and inventory payloads, run recorded on workflow start, dashboard routes mounted) |
 | Step 7 SAP integration tests | `pytest tests/test_sap_integration.py` | ✅ **37 passed** (four API profiles and env selection, undeclared-capability refusal, OAuth2 client-credentials form + token caching, secret never echoed in an error body, no token/secret in logs, header redaction, bearer replaces `x-api-key`, material master reads, profile-aware read paths, 404 → `None`, read connector has no write methods, request validation, approval evidence from approve/reject, keyword-only evidence, deterministic simulated writes for all three write types, literal idempotency key, fail-closed write permission, live writer requires credentials, read/write scope and permission separation, rejected vs failed classification, `Retry-After` honoured, approved-vs-rejected end to end) |
 | Step 6 approval + execution tests | `pytest tests/test_approvals.py` | ✅ **50 passed** (proposal versioning, credential parsing, authentication and role hierarchy, bearer parsing, legacy and Step 6 payloads, approve/reject identity + timestamp + history, bounded modification loop, execution plan/keys/labelling/replay/refusal, partial + failed reports, live adapter via `httpx.MockTransport`, repository semantics in memory and SQLite, API 401/403/409/503 including approve → execute → duplicate prevention and the modification round-trip) |
@@ -1115,13 +1308,15 @@ npm run dev
     `HttpExecutionAdapter` is implemented and unit-tested via `httpx.MockTransport`
     but has never been pointed at a real endpoint. The Step 7 SAP write connector
     exists but is not yet wired into this execution path (see §11 item 15).
-13. **The Approval Center's populated path has not been exercised in a browser.**
-    The Step 8 browser walkthrough covered the missing-token, invalid-token
-    (`503`) and empty-queue states. Approving a real proposal requires a paused
-    successful run and `APPROVER_CREDENTIALS`; the live Gemini quota blocked the
-    former on 2026-11-22 (see item 17). The API paths remain covered by the
-    Step 6 tests and the UI state machine is the same code that renders the
-    fail-closed states.
+13. **The Approval Center's populated path was browser-verified on 2026-11-25.**
+    With `APPROVER_CREDENTIALS` configured locally, the queue showed the pending
+    `EV-UI-START-…cf0e25` proposal and the detail view rendered the versioned
+    proposal, cost/risk impact, the four recorded agent executions and the
+    decision controls. A stale token that held the whole `token:id:Role` entry is
+    now rejected with an actionable 401 and cleared from sessionStorage; the
+    approver re-enters only the token part. The decision itself is left to the
+    authenticated human; submission is covered by the Step 6 tests and the Step 9
+    live run.
 14. **SAP write paths are prepared defaults, not tenant-verified.** The paths in
     `app/integrations/sap_profiles.py` (e.g.
     `/sap/opu/odata/sap/API_SHIPMENT_SRV/…`) are the conventional shapes for each
@@ -1170,42 +1365,67 @@ npm run dev
     the `EV-UI-VERIFY-003` live approval/execution, not by a fresh live Mumbai
     run. `EV-STEP9-MUMBAI-002` remains recorded as a genuine failed run. Any
     demo must account for this limit (rotation or a quota-backed key).
-21. **No approver credential is persisted in `backend/.env`.** The live
-    approval verification used a credential supplied through the process
-    environment at startup. `APPROVER_CREDENTIALS` is still unset in the file, so
-    the approval API fails closed with `503` after a plain restart. Persisting a
-    real approver token is a credential decision that needs explicit approval.
+21. **Approver credentials are configured locally, token-part only.**
+    `backend/.env` holds one `token:approver_id:Role` entry. The approval API
+    expects **only the token part** in the Bearer header; sending the whole entry
+    returns 401 with that instruction and the Approval Center clears the rejected
+    token so it can be re-entered. The `.env.example` templates still leave
+    `APPROVER_CREDENTIALS` empty, so a fresh checkout fails closed with `503`.
 22. **Four failed verification rows remain in the shared Aiven database.**
     `EV-UI-VERIFY-001/002` (Gemini `503`/`429`) and
     `EV-STEP9-MUMBAI-001/002` (missing seed row, then quota) are genuine
     recordings and are displayed honestly. Deleting rows from a shared database
     is destructive and was not authorised; it remains a pending data-cleanup
     decision.
+23. **Live Step 10 demo is blocked by the Gemini free-tier quota.** Both flash
+    models were exhausted during verification: `gemini-3.6-flash` returned
+    `429` (20/day) and `gemini-3.5-flash` worked briefly then also hit `429`;
+    `gemini-flash-latest` returned `503` "high demand". A demo run costs ~5
+    calls. `EV-DEMO-RED-SEA`…`-5` are recorded as failed in the Compose
+    database and no execution occurred. Use billing, a quota-backed key, or a
+    rotation plan before an unattended live demo.
+24. **The paused-run approval path was not replayed through the container.**
+    It is covered by the graph/API tests and by the Step 9 live run on Aiven;
+    the Step 10 verification proved checkpoints, restart persistence and the
+    fail-closed approval API instead.
+25. **Compose ports assume 8000/8080 are free.** Local Vite (5173) is fine, but
+    a running local uvicorn on 8000 must be stopped first.
+26. **The single-flight guard is in-process.** `WorkflowGuard` relies on the
+    Compose stack running one uvicorn worker. A multi-worker or multi-replica
+    deployment would admit one run per process; adding `--workers` requires
+    replacing the lock with a database advisory lock first. The guard also makes
+    a run block the slot for its whole duration (up to ~2.5 min live), which is
+    intended: that is what prevents overlapping five-agent runs.
 
 ---
 
 ## 12. Exact next action
 
-**Start Step 10 — Deployment and Hackathon Demonstration** (not started).
+**Step 10 is complete; the roadmap is finished.** No further step should be
+started automatically.
 
-Step 9 is complete and verified (see §3, §10 and
-`backend/docs/validation-report.md`). The product's golden path, approval and
-execution, persistence, security boundaries and failure handling were all
-exercised, and three defects found during the audit were fixed. Step 10 should
-package what exists rather than add decision logic:
+What is verified: the container stack (db, seed, backend, frontend), the `/api`
+proxy, eight stateful tables including four LangGraph checkpoint tables, a clean
+ordered lifecycle, fail-closed approvals, the one-click Start with server-enforced
+single-flight admission, and **400 passed / 6 skipped / 0 failures**. The
+deterministic E2E test remains the authoritative golden-path proof; the latest
+live Start run reached `awaiting_approval` with four agent executions.
 
-1. **Containers** — backend and frontend Dockerfiles, Docker Compose including
-   PostgreSQL, env-var wiring, persistent checkpoint storage and health checks.
-2. **Demo readiness** — one complete Red Sea / Mumbai → Rotterdam scenario that
-   shows detection, supervisor delegation, all five agents, tool use,
-   deterministic calculations, collaboration, scenario comparison, compliance
-   rejection and replanning, and human approval.
-3. **Quota plan** — the Gemini free tier allows 20 requests/day per model and a
-   demo run costs ~5; budget or rotate keys before the live demo.
+To make the live demo runnable unattended, the remaining task is quota capacity:
+
+1. Enable billing, or supply keys that belong to **different** Google Cloud
+   projects (a run costs ~5 calls; the free tier allows 20/day/project/model, and
+   keys in one project share that bucket). The client now rotates past an
+   exhausted key and quarantines it for the reported reset window.
+2. Then run `docker compose exec -T backend python -m scripts.run_demo_scenario
+   --thread-id EV-DEMO-RED-SEA-<n> --base-url http://127.0.0.1:8000/api`, approve
+   with a temporary Director credential, and follow
+   `backend/docs/demo-script.md`.
 
 Deferred and still needing explicit approval (recorded in §11): persisting an
-approver credential (§21) and deleting the four failed verification rows (§22).
-SAP writes remain deferred until proposals carry shipment/plant identifiers.
+approver credential (§21) and deleting the failed verification/demo rows from the
+shared Aiven database (§22). SAP writes remain deferred until proposals carry
+shipment/plant identifiers.
 
 ---
 

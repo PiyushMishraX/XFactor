@@ -132,7 +132,16 @@ from app.schemas.scenario_schemas import (
     ScenarioPlan,
     ScenarioRevision,
 )
-from app.services.gemini_service import GeminiNotConfiguredError, GeminiService
+from app.services.gemini_keys import (
+    AGENT_ORDER,
+    resolve_agent_key_order,
+    resolve_agent_keys,
+)
+from app.services.gemini_service import (
+    GeminiNotConfiguredError,
+    GeminiQuotaExceededError,
+    GeminiService,
+)
 from app.services.supply_chain_repository import (
     PostgresSupplyChainRepository,
     SupplyChainRepository,
@@ -147,11 +156,13 @@ logger = logging.getLogger(__name__)
 #: the first attempt. A transient failure is therefore retried exactly once.
 _MAX_AGENT_ATTEMPTS = 2
 
-#: Failures that a retry cannot fix: a missing API key, an unconfigured
-#: integration, malformed tool input or a request that fails validation. These
-#: go straight to the terminal state instead of burning a retry.
+#: Failures that a retry cannot fix: a missing API key, exhausted Gemini quota,
+#: an unconfigured integration, malformed tool input or a request that fails
+#: validation. These go straight to the terminal state instead of burning a
+#: retry.
 _NON_RETRYABLE_ERRORS: Tuple[type, ...] = (
     GeminiNotConfiguredError,
+    GeminiQuotaExceededError,
     IntegrationNotConfiguredError,
     ToolInputError,
     ValidationError,
@@ -187,28 +198,58 @@ def build_agents(
     sap: SAPConnector,
     mapping: MappingConnector,
     carriers: CarrierConnector,
+    settings: Optional[Settings] = None,
 ) -> SupervisorAgents:
-    """Wire the five agents around one shared Gemini service and the connectors.
+    """Wire the five agents around Gemini services and the connectors.
+
+    When ``gemini`` is supplied (tests, or a caller that wants one key), every
+    agent shares it. Otherwise each agent receives its own service bound to the
+    key slot from ``GEMINI_API_KEYS`` / ``GEMINI_KEY_SLOTS``, so the five agents
+    spread across the configured keys and pace their calls per key. Each service
+    also carries the remaining keys as fallbacks, starting after its assigned
+    slot, so an exhausted key rotates to the next one instead of failing.
 
     The Rerouting and Inventory agents are also handed to the Scenario agent,
     which requests them itself. External connectors are wrapped in recording
     proxies so every call an agent actually makes is observable (Step 5); the
     proxies are transparent, so behaviour is unchanged.
     """
-    service = gemini or GeminiService()
+    settings = settings or get_settings()
+    if gemini is not None:
+        services = {agent: gemini for agent in AGENT_ORDER}
+    else:
+        assigned = resolve_agent_keys(settings)
+        rotation = resolve_agent_key_order(settings)
+        services = {
+            agent: GeminiService(
+                settings=settings,
+                api_key=assigned.get(agent),
+                agent_name=agent,
+                fallback_keys=rotation.get(agent),
+            )
+            for agent in AGENT_ORDER
+        }
     mapping = wrap_connector("mapping", mapping)
     carriers = wrap_connector("carriers", carriers)
     sap = wrap_connector("sap", sap)
-    rerouting = ReroutingLogisticsAgent(gemini=service, mapping=mapping, carriers=carriers)
-    rebalancing = InventoryRebalancingAgent(gemini=service, sap=sap)
+    rerouting = ReroutingLogisticsAgent(
+        gemini=services["rerouting_logistics"], mapping=mapping, carriers=carriers
+    )
+    rebalancing = InventoryRebalancingAgent(
+        gemini=services["inventory_rebalancing"], sap=sap
+    )
     return SupervisorAgents(
-        sensing=DisruptionSensingAgent(gemini=service, repository=repository),
+        sensing=DisruptionSensingAgent(
+            gemini=services["disruption_sensing"], repository=repository
+        ),
         rerouting=rerouting,
         rebalancing=rebalancing,
         scenario=ScenarioPlanningAgent(
-            gemini=service, rerouting=rerouting, rebalancing=rebalancing
+            gemini=services["scenario_planning"],
+            rerouting=rerouting,
+            rebalancing=rebalancing,
         ),
-        compliance=ComplianceAuditAgent(gemini=service),
+        compliance=ComplianceAuditAgent(gemini=services["compliance_audit"]),
     )
 
 
@@ -234,6 +275,7 @@ def build_default_agents(
         sap=get_sap_connector(settings),
         mapping=get_mapping_connector(settings),
         carriers=get_carrier_connector(settings),
+        settings=settings,
     )
 
 

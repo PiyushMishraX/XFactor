@@ -128,5 +128,12 @@ and/or inventory cover at **Rotterdam DC** for **MAT-PHARMA-001**.
 ## 9. Deployment readiness
 
 Step 9 is complete; the system is demonstrable end to end with the documented
-quota caveat. Step 10 (Dockerfiles, Compose, deployment configuration, demo
-script) has not started, so the platform is not yet packaged for deployment.
+quota caveat.
+
+> **Update, 2026-11-24:** Step 10 has since completed the packaging this section
+> previously listed as outstanding. Dockerfiles, Docker Compose (PostgreSQL 16,
+> seed job, persistent checkpoints), health checks, the Red Sea demo scenario and
+> the deployment/demo documentation now exist. See
+> [deployment.md](deployment.md), [demo-script.md](demo-script.md) and
+> [test-report.md](test-report.md) §6 for the verified container evidence. The
+> quota caveat above still applies to the live demo.

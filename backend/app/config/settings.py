@@ -45,10 +45,27 @@ class Settings(BaseSettings):
     DB_CONNECT_TIMEOUT: int = 3
 
     # --- Google Gemini (LLM reasoning) — Step 1 onwards -----------------
+    #: Primary (legacy) key. Included first in the effective key list.
     GEMINI_API_KEY: str = ""
+    #: Additional keys, comma-separated. The effective list is
+    #: ``[GEMINI_API_KEY, *GEMINI_API_KEYS]`` with duplicates removed.
+    GEMINI_API_KEYS: str = ""
+    #: Optional explicit slot overrides, e.g.
+    #: "disruption_sensing=0,compliance_audit=1". Agents not listed are
+    #: assigned round-robin in roadmap order.
+    GEMINI_KEY_SLOTS: str = ""
     GEMINI_MODEL: str = "gemini-3.5-flash"
     GEMINI_TIMEOUT_SECONDS: int = 90
     GEMINI_MAX_OUTPUT_TOKENS: int = 2048
+    #: Minimum spacing between requests that use the same key, per process.
+    #: 0 disables pacing (used by tests).
+    GEMINI_MIN_INTERVAL_SECONDS: float = 0.0
+    #: Base retry backoff; attempt N waits N × this value.
+    GEMINI_RETRY_BACKOFF_SECONDS: float = 2.0
+    #: Longest Google-reported quota retry delay that is waited for in-process.
+    #: Daily quotas report hours, so their keys are quarantined and the call
+    #: rotates to another key instead of sleeping.
+    GEMINI_QUOTA_RETRY_MAX_SECONDS: float = 120.0
     GEMINI_API_BASE: str = "https://generativelanguage.googleapis.com/v1beta"
 
     # --- LangGraph orchestration — Step 4 onwards -----------------------
@@ -144,9 +161,20 @@ class Settings(BaseSettings):
         return uri
 
     @property
+    def gemini_api_keys(self) -> tuple[str, ...]:
+        """Effective ordered key list, without blanks or duplicates."""
+        seen: list[str] = []
+        candidates = [self.GEMINI_API_KEY, *self.GEMINI_API_KEYS.split(",")]
+        for candidate in candidates:
+            key = candidate.strip()
+            if key and key not in seen:
+                seen.append(key)
+        return tuple(seen)
+
+    @property
     def gemini_configured(self) -> bool:
-        """True when a Gemini API key is present."""
-        return bool(self.GEMINI_API_KEY)
+        """True when at least one Gemini API key is present."""
+        return bool(self.gemini_api_keys)
 
     @property
     def sap_configured(self) -> bool:

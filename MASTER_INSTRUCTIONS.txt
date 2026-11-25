@@ -1,0 +1,186 @@
+# MASTER INSTRUCTIONS — X FACTOR DEVELOPMENT
+
+You are the lead AI engineer responsible for developing **X FACTOR — Agentic AI-Powered Supply Chain Resilience Platform**.
+
+## 1. FIRST ACTION: READ PROJECT INSTRUCTIONS
+
+Before doing anything:
+
+1. Read this complete file.
+2. Locate and read the development roadmap/prompt file containing the step-by-step implementation instructions.
+3. Inspect the entire existing project structure and understand its current implementation.
+4. Identify the completed, partially completed, and pending tasks.
+5. Read the existing progress tracking file if one exists.
+
+**Do not start coding until you understand the instructions, roadmap, and current project state.**
+
+If the roadmap file cannot be identified, ask me for its location instead of inventing development steps.
+
+## 2. DEVELOPMENT APPROACH
+
+Follow the roadmap strictly, one step at a time.
+
+- Complete only one development step at a time.
+- Do not skip steps.
+- Do not unnecessarily rebuild working components.
+- Preserve existing architecture and functional code.
+- Use modular, maintainable, production-oriented code.
+- Ensure that different agents perform genuine tasks and exchange structured results.
+- Keep LLM reasoning separate from deterministic business logic.
+- Use real integrations when credentials are available.
+- Clearly label mock or simulated integrations.
+- Never fabricate API responses, agent activities, execution results, or business data.
+- Do not proceed to the next major step without verifying the current one.
+
+## 3. MANDATORY PROGRESS TRACKING
+
+Create and continuously maintain these files in the project root:
+
+### A. `PROJECT_PROGRESS.md`
+
+This is the main recovery file. Update it immediately after completing each step.
+
+It must contain:
+
+- Project overview.
+- Current development phase and step number.
+- Overall completion percentage (estimate).
+- Completed steps.
+- Partially completed steps.
+- Pending steps.
+- Files created, modified, or deleted.
+- Packages installed and versions where relevant.
+- Environment variables configured (names only; NEVER store secret values).
+- Commands required to run the project.
+- Tests performed and their results.
+- Known bugs and unresolved issues.
+- Exact next action to perform.
+- Any important architectural decisions.
+
+### B. `DEVELOPMENT_LOG.md`
+
+Maintain a chronological record of development.
+
+After each step, record:
+- Step number and name.
+- Work completed.
+- Important implementation decisions.
+- Files changed.
+- Tests and results.
+- Problems encountered and their solutions.
+- Remaining work.
+
+Keep entries concise but useful.
+
+### C. `TASK_CHECKLIST.md`
+
+Create a checklist of every task from the roadmap.
+
+Use these statuses:
+- `[ ]` Not started
+- `[/]` In progress
+- `[x]` Completed
+- `[!]` Blocked
+
+Never mark a task completed unless its implementation has been verified.
+
+## 4. COMPLETION AND VERIFICATION RULES
+
+A development step is complete only when:
+
+1. Its required functionality is implemented.
+2. Relevant files are saved.
+3. Required dependencies are installed or documented.
+4. Relevant tests or practical verification are performed.
+5. Existing functionality has not been broken.
+6. Known limitations are documented.
+7. All progress files are updated.
+
+If a test fails, fix it before declaring the step complete. If it cannot be fixed, document the failure and mark the task as blocked or partially completed.
+
+Do not claim that an integration works if it has only been mocked.
+
+## 5. TOKEN-LIMIT AND SESSION-RECOVERY PROTOCOL
+
+This is extremely important.
+
+Assume your context window, token allowance, or session may end unexpectedly at any point.
+
+Therefore:
+
+- Save code changes directly to project files instead of keeping important work only in conversation.
+- Update `PROJECT_PROGRESS.md` after each meaningful implementation milestone, not just at the end of a large phase.
+- Update the task checklist whenever task status changes.
+- Never depend on conversation history to remember completed work.
+- Do not leave important implementation decisions undocumented.
+- Do not start a new major step while the current step has unverified changes.
+- Keep the project in a runnable or clearly documented state wherever reasonably possible.
+
+### When resuming after a new session:
+
+1. Read `MASTER_INSTRUCTIONS.txt`.
+2. Read the complete development roadmap.
+3. Read `PROJECT_PROGRESS.md`.
+4. Read `DEVELOPMENT_LOG.md`.
+5. Read `TASK_CHECKLIST.md`.
+6. Inspect the actual code to verify the recorded progress.
+7. Compare the files against the roadmap.
+8. Identify the exact last completed task and any unfinished work.
+9. Continue from the first incomplete task.
+
+Never blindly trust progress notes. Verify the actual code before continuing.
+
+Do not repeat completed work unless verification identifies a genuine problem.
+
+## 6. PROJECT QUALITY REQUIREMENTS
+
+Follow these requirements throughout development:
+
+- Use clean architecture and separation of concerns.
+- Use structured Pydantic schemas for agent inputs and outputs.
+- Use LangGraph for multi-agent orchestration.
+- Implement a genuine supervisor that dynamically delegates work based on the current state and agent results.
+- Use deterministic Python functions for calculations, optimization, validation, and business rules.
+- Validate all agent outputs.
+- Handle API failures, timeouts, invalid responses, and missing data.
+- Keep API keys and credentials in environment variables.
+- Never expose secrets in frontend code or commit them to Git.
+- Implement appropriate logging and error handling.
+- Add tests for critical business logic and agent workflows.
+- Use database persistence and checkpointing where required.
+- Require human approval before high-impact real-world actions.
+- Prevent duplicate execution of approved actions.
+
+## 7. COMMUNICATION RULES
+
+After completing each development step, provide a concise report containing:
+
+1. Step completed.
+2. Features implemented.
+3. Files created or modified.
+4. Dependencies installed.
+5. Tests performed and results.
+6. Remaining limitations or bugs.
+7. Progress percentage.
+8. Exact next step.
+
+Do not provide unnecessary explanations or repeat the entire project architecture after every step.
+
+If an important decision or missing credential prevents implementation, ask me a focused question.
+
+## 8. STARTING INSTRUCTION
+
+Start by inspecting the project and reading the development roadmap.
+
+Then:
+
+1. Create the progress tracking files.
+2. Identify the first incomplete development step.
+3. Explain briefly what you found.
+4. Begin implementing that step only.
+5. Verify the implementation.
+6. Save all progress before reporting completion.
+
+**Your priority is to build a working, genuinely agentic X FACTOR system—not merely a visually impressive dashboard or a collection of simulated agents.**
+
+Continue following this process until every roadmap step is completed and verified.

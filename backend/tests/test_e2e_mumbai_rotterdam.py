@@ -15,7 +15,9 @@ are the ones the demo dataset actually produces. Gemini is the only double.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -329,3 +331,33 @@ def test_mumbai_rotterdam_approval_executes_the_planned_transfer_only_once() -> 
             workflow=workflow,
         )
     assert len(repository.get(thread_id).execution.actions) == len(action_types)
+
+
+DEMO_DIR = Path(__file__).resolve().parents[1] / "demo"
+
+
+def _load_demo_request(name: str) -> RecoveryRequest:
+    payload = json.loads((DEMO_DIR / name).read_text(encoding="utf-8"))
+    return RecoveryRequest.model_validate(payload["request"])
+
+
+def test_demo_payloads_are_valid_and_the_replan_variant_replans() -> None:
+    """The shipped demo JSON must drive the documented flows unchanged."""
+    base = _load_demo_request("mumbai_rotterdam_scenario.json")
+    assert base.scenario_request.origin == "Mumbai"
+    assert base.scenario_request.destination == "Rotterdam"
+    assert base.scenario_request.inventory is not None
+    assert base.scenario_request.inventory.target_plant == "Rotterdam DC"
+    assert base.supplier_id == "SUP001"
+
+    replan = _load_demo_request("mumbai_rotterdam_replan_scenario.json")
+    workflow = build_mumbai_workflow(ScriptedGemini())
+    state = workflow.invoke(replan, thread_id="EV-DEMO-RED-SEA-REPLAN")
+
+    # The three-day ceiling rejects the Sea alternatives and the supervisor
+    # records exactly one revision, preserving the rejected plan.
+    assert state["replan_rounds"] == 1
+    assert len(state["scenario_history"]) == 1
+    assert state["scenario_history"][0]["rejected_scenario_ids"]
+    assert state["scenario_plan"]["revision_round"] == 1
+    assert state["scenario_plan"]["scenarios"]

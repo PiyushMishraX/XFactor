@@ -1085,4 +1085,276 @@ fix critical errors, and write the final report.
 
 ---
 
+## 2026-11-24 — Session 10: Step 10 — Deployment and Hackathon Demonstration
+
+### Objective
+
+Package the finished product for the hackathon without changing decision logic:
+containers, Compose, environment wiring, PostgreSQL with persistent checkpoints,
+health checks, one Red Sea demo scenario and the final deliverable documents.
+
+### What was built
+
+- `backend/Dockerfile` — python:3.12-slim, non-root `xfactor`, `COPY app scripts
+  demo`, liveness healthcheck, uvicorn on 0.0.0.0:8000; `backend/.dockerignore`
+  keeps `.env`, tests, docs and caches out of the image.
+- `frontend/Dockerfile` — multi-stage `node:22-alpine` build → `nginx:1.27-alpine`;
+  `frontend/nginx.conf` serves the SPA with `try_files`, answers `/healthz`, and
+  proxies `/api/` to `backend:8000` with a 180 s read timeout so long agent runs
+  are not cut off.
+- `docker-compose.yml` — `db` (postgres:16-alpine, `postgres-data` volume,
+  `pg_isready`), one-shot `seed` (idempotent reference data), `backend`
+  (`LANGGRAPH_CHECKPOINT_BACKEND=postgres`, `DATABASE_URL` empty so discrete
+  `POSTGRES_*` apply, `stop_grace_period: 30s`), `frontend` published on 8080;
+  dependencies use health conditions and `service_completed_successfully`.
+- Demo assets: `backend/demo/mumbai_rotterdam_scenario.json`
+  (`EV-DEMO-RED-SEA`) and `mumbai_rotterdam_replan_scenario.json`
+  (`EV-DEMO-RED-SEA-REPLAN`, lead-time rule 18 days so the 21.7-day sea options
+  are rejected and the 16.7-day road option survives); `scripts/run_demo_scenario.py`
+  submits a scenario, prints decisions, agent executions, scenarios, screening,
+  inventory and approval, and can submit an authenticated decision.
+- Documents: `architecture.md`, `langgraph-workflow.mmd`, `api.md`,
+  `database-schema.md`, `deployment.md`, `demo-script.md`, `test-report.md`;
+  README restructured with Compose usage and links.
+
+### How it is verified
+
+- `docker compose build` produced `xfactor-backend`/`xfactor-seed` at 407 MB and
+  `xfactor-frontend` at 74.4 MB; `docker compose config --quiet` is valid.
+- Clean `docker compose up`: db healthy → seed exits 0 ("5 suppliers, 10
+  shipments") → backend healthy → frontend healthy.
+- `:8080/` 200, `:8080/healthz` 200, `:8080/api/health` 200 with
+  `"database":"connected"`; dashboard reports 10 shipments and 5 suppliers.
+- Eight tables exist, including `checkpoints`, `checkpoint_blobs`,
+  `checkpoint_writes`, `checkpoint_migrations` (40 checkpoint rows).
+- `docker compose restart backend` → `GET /api/orchestration/workflows/EV-DEMO-RED-SEA-5/state`
+  still returns the saved failed state, proving persistence in PostgreSQL.
+- `docker compose stop` logs `Waiting for application shutdown` →
+  `Application shutdown complete`; `docker compose start` restarts in order.
+- `GET :8080/api/approvals/pending` → 401 unauthenticated, 503 fail-closed with
+  no configured credential.
+- Full suite: **375 collected, 369 passed, 6 skipped, 0 failures** (the extra
+  test validates both demo payloads and the replan revision).
+
+### Problems encountered and their solutions
+
+1. **Docker engine was not running** — the first "build" only appeared to
+   succeed because the pipeline swallowed the daemon error. Started Docker
+   Desktop and waited for `docker info`.
+2. **Corrupted layer download** (`short read … unexpected EOF`) — pulled each
+   base image explicitly with retries, then rebuilt.
+3. **Demo runner field mismatches** — corrected the runner to the real payloads
+   (`scenario_count/evaluations/all_rejected`, state `scenario_plan`,
+   `decision.decision.approver_id`, interrupt `approval_level/verdict/reasons`).
+4. **Replan variant rejected everything** — the lead-time rule was tighter than
+   the demo days; set it to 18.0 so exactly one compliant alternative remains.
+5. **Live demo blocked by Gemini** — `503 high demand` for both flash models,
+   then `429 quota exceeded` (20/day). Probed models directly, switched
+   `.env` to the model that was serving, still exhausted. Failed runs
+   `EV-DEMO-RED-SEA`…`-5` are recorded; no execution happened and nothing was
+   fabricated.
+
+### Honest limitation
+
+The live container demo — a pause at the approval gate, a decision and three
+`[SIMULATED]` executions — could not be produced while the quota was exhausted.
+The deterministic E2E test and the Step 9 live run remain the evidence for that
+path; §11 items 23–25 of `PROJECT_PROGRESS.md` record the gap.
+
+### Remaining work
+
+- No roadmap step remains. The only outstanding item is Gemini quota capacity
+  (billing, a quota-backed key, or key rotation) so the demo can run unattended.
+- Deferred pending explicit approval: persisting an approver credential; deleting
+  the failed verification/demo rows from the shared Aiven database.
+
+---
+
+## 2026-11-24 — Session 11: Multi-key Gemini distribution and pacing
+
+### Objective
+
+Stop all five agents from sharing one free-tier key and bursting calls. Allow
+two (or more) operator keys to be distributed per agent, with deliberate spacing
+between requests.
+
+### What was built
+
+- `Settings.GEMINI_API_KEYS` (comma-separated), `GEMINI_KEY_SLOTS`
+  (`agent=index` overrides), `GEMINI_MIN_INTERVAL_SECONDS` and
+  `GEMINI_RETRY_BACKOFF_SECONDS`. The effective key list is
+  `GEMINI_API_KEY` first, then the extra keys, de-duplicated.
+- `app/services/gemini_keys.py`: `AGENT_ORDER` (roadmap order),
+  `parse_key_slots` and `resolve_agent_keys` — round-robin by default, explicit
+  overrides honoured, unknown agents and out-of-range slots rejected with a
+  clear `ValueError`.
+- `GeminiService` accepts an explicit `api_key` and `agent_name`; when no shared
+  service is supplied, `build_agents` creates one service per agent bound to its
+  slot. `build_default_agents` passes settings through.
+- Process-wide `_KeyThrottle`: every HTTP attempt waits until
+  `GEMINI_MIN_INTERVAL_SECONDS` has elapsed since the previous request **on the
+  same key fingerprint**, so two agents sharing a key also space out. Retry
+  backoff is now `N × GEMINI_RETRY_BACKOFF_SECONDS`.
+- Keys are never logged; DEBUG logs show the agent and a 12-character SHA-256
+  fingerprint only.
+- Local `backend/.env` pacing is 6 s and backoff 5 s. The two operator keys still
+  need to be pasted into `GEMINI_API_KEYS` (not committed, not written by me).
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| `pytest tests/test_gemini_multi_key.py` | ✅ 14 passed |
+| Full suite (`pytest tests`, from `backend/`) | ✅ 389 collected, 383 passed, 6 skipped, 0 failures |
+| Distribution with two keys | sensing/rerouting/compliance → slot 0; scenario/inventory → slot 1 |
+| Invalid slot / unknown agent | `ValueError` naming the offending entry |
+| Explicit shared service | unchanged behaviour (tests and single-key callers) |
+
+Live verification with the real second key is pending: the keys are supplied by
+the operator and the Gemini free-tier window was still exhausted.
+
+### Remaining work
+
+- Paste the two keys into `backend/.env` (`GEMINI_API_KEYS`), recreate the
+  backend, and confirm per-agent key fingerprints in DEBUG logs.
+- If the demo must run before the quota resets (~08:00 UTC), use a billed key.
+
+---
+
+## 2026-11-24 — Session 12: Quota-aware key rotation and quarantine
+
+### Objective
+
+The operator reported the workflow stopping with HTTP `429` at
+`disruption_sensing`. The upstream payload was a **daily** cap
+(`RESOURCE_EXHAUSTED`, `GenerateRequestsPerDayPerProjectPerModel-FreeTier`,
+`quotaValue: 20`, `retryDelay: 51075s`), so the previously suggested
+"retry with 15–60 s backoff" could not help. The goal was to make the client
+behave correctly for this failure: stop retrying a dead key, use the other key,
+and report the limit honestly when none is left.
+
+### What was built
+
+- `GeminiQuotaExceededError` and `parse_quota_failure` extract the quota id,
+  model and `retryDelay` from Google's `QuotaFailure` / `RetryInfo` details.
+- `_KeyCooldown` quarantines an exhausted key (process-wide, keyed by SHA-256
+  fingerprint) for the reported reset window.
+- `_post` rotates through the agent's candidate keys. `_post_one` sends one key's
+  request; a daily quota 429 is not retried three times — it raises immediately,
+  the key is quarantined and the next key is tried.
+- Only a short `retryDelay` (`≤ GEMINI_QUOTA_RETRY_MAX_SECONDS`, default 120 s)
+  is slept on, which is the per-minute-throttle shape. Non-quota 429s keep the
+  existing retry/backoff behaviour.
+- Each agent's fallback order starts at its assigned slot: with two keys, slot 1
+  yields `(key2, key1)`. `resolve_agent_key_order` computes this alongside
+  `resolve_agent_keys`.
+- `GeminiQuotaExceededError` is in the supervisor's non-retryable set, so an
+  exhausted quota does not burn a second agent execution.
+- When every key is cooling down, the call fails without any HTTP request and
+  states the earliest reset in UTC.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| `pytest tests/test_gemini_quota_rotation.py` | ✅ 8 passed |
+| Gemini modules (`quota_rotation`, `multi_key`, `service`) | ✅ 31 passed |
+| Full suite (`pytest tests`, from `backend/`) | ✅ 397 collected, 391 passed, 6 skipped, 0 failures |
+| Daily quota 429 | 1 HTTP attempt, no sleep, key quarantined, actionable error |
+| Primary exhausted | rotates to the fallback key; later calls skip the cooling key with no request |
+| All keys cooling | error names the reset time; handler is never called |
+| Short `retryDelay` (30 s) | slept once, retried the same key, succeeded |
+| Test hygiene | `test_gemini_service.py` now passes `_env_file=None` so a real key in `backend/.env` cannot leak into the missing-key test |
+| Live probe (18:18 UTC, in container) | `disruption_sensing` key → `{"ok": true}`; `scenario_planning` key → daily-quota 429, rotated to slot 0, `{"ok": true}`. This is the first live evidence that rotation works against the real API |
+
+The full workflow demo has not been rerun: it needs ~5 calls of headroom plus an
+approver credential (approval currently fails closed with 503). The LLM path the
+demo uses is the same one exercised by the live probe.
+
+---
+
+## 2026-11-25 — Session 13: One-click Start with single-flight admission
+
+### Objective
+
+The operator asked for a Start button that runs the agents once, so repeated
+clicks cannot overload the five agents or the Gemini quota. Every existing start
+path invoked the supervisor independently, so overlapping clicks or tabs could
+launch concurrent five-agent runs.
+
+### What was built
+
+- `WorkflowGuard` — a process-wide, non-blocking `threading.Lock` that holds the
+  active thread id. It matches the Compose stack's single uvicorn worker; the
+  docs state that horizontal scaling needs a database advisory lock.
+- `_run_guarded` in the orchestration API wraps both start paths. A second start
+  while the slot is held returns `409` with the active thread id; the guard is
+  always released in `finally`, and approval/history persistence stays inside the
+  claimed slot.
+- `POST /api/orchestration/workflows/start` loads the bundled validated Red Sea
+  scenario, assigns a fresh `EV-UI-START-<UTC>-<hex>` event id to both nested
+  event ids, runs it once and records the run in `workflow_runs`.
+- `GET /api/orchestration/workflows/active` reports `{running, thread_id}`.
+- Overview gained a **Start agents** panel: disabled while any run is in flight
+  (polled every 4 s), with a running message, run output (status, agents executed,
+  proposal version, recommendation, errors) and links to Agent Activity and the
+  Approval Center. The overview refreshes after a run.
+- `frontend/src/services/api.js` gained `startAgents()` and `getActiveWorkflow()`.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| `pytest tests/test_workflow_start.py` | ✅ 9 passed |
+| Full suite (`pytest tests`, from `backend/`) | ✅ 406 collected, 400 passed, 6 skipped, 0 failures |
+| Frontend lint / build | ✅ 0 errors (2 pre-existing warnings) / built |
+| Live UI click | ✅ started `EV-UI-START-20261124-183758-cf0e25`; button showed **Agents running…** |
+| Concurrent start | ✅ `409` naming the active thread |
+| Run output | ✅ recorded `awaiting_approval`, 4 agent executions, proposal `632eec40e5aa393c`, one transient Gemini `503` retried and recorded honestly |
+| Slot release | ✅ active returned `{"running": false, "thread_id": null}` after completion |
+| Earlier live attempt | `EV-UI-START-20261124-183611-309e66` failed after two `503` attempts; displayed as failed, not masked |
+
+The approval gate is reached but not decided: the human approver has not yet
+submitted a decision for the pending proposal.
+
+---
+
+## 2026-11-25 — Session 14: Approval Center token-entry fix
+
+### Problem
+
+The Approval Center showed "The bearer token is not recognised." and an empty
+queue while a proposal was actually pending. The browser's sessionStorage held
+the entire `APPROVER_CREDENTIALS` entry (`token:approver_id:Role`, 16 chars)
+instead of just the token part, and the UI kept that rejected token as if it were
+valid, with no hint about the correct format.
+
+### Fix
+
+- `ApprovalAuthorizer` now returns an actionable 401: send only the token part
+  (before the first colon), not the whole entry.
+- `request()` attaches the HTTP status to thrown errors so the UI can recognise
+  authentication failures.
+- The Approval Center clears a 401-rejected token from state and sessionStorage,
+  shows the token prompt again with the reason, labels the field "token part only"
+  and explains the format in the empty state. The same reset applies to a
+  rejected decision submission.
+- Tests assert both the hint and that the whole-entry form is rejected.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| `pytest tests` (from `backend/`) | ✅ 406 collected, 400 passed, 6 skipped, 0 failures |
+| Frontend lint / build | ✅ 0 errors / built |
+| Live wrong token | ✅ 401 with the "before the first colon" hint |
+| Live UI reload with stale token | ✅ token cleared automatically; prompt and reason shown |
+| Live correct token (`abgcg`) | ✅ pending queue shows 1 proposal |
+| Proposal detail | ✅ version `632eec40e5aa393c`, cost/risk impact, 4 agent executions, decision controls |
+
+The approval decision is intentionally left to the human approver; nothing was
+approved, rejected or executed during this check.
+
+---
+
 _All progress files updated at the end of this milestone._

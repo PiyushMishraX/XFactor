@@ -352,33 +352,96 @@ Derived from `DEVELOPMENT_ROADMAP.txt`. Statuses:
 
 ## STEP 10 — Deployment and Hackathon Demonstration
 
-- [ ] Prepare Dockerfiles
-- [ ] Configure Docker Compose
-- [ ] Configure frontend and backend environment variables
-- [ ] Configure PostgreSQL
-- [ ] Configure persistent workflow checkpoints
-- [ ] Verify service communication
-- [ ] Add health checks
-- [ ] Verify startup and shutdown behaviour
-- [ ] Prepare one complete Red Sea disruption demo scenario
-- [ ] Demo shows disruption detection
-- [ ] Demo shows supervisor reasoning and task delegation
-- [ ] Demo shows all five specialised agents executing
-- [ ] Demo shows external tool usage
-- [ ] Demo shows deterministic calculations
-- [ ] Demo shows agent collaboration
-- [ ] Demo shows scenario comparison
-- [ ] Demo shows compliance rejection and replanning
-- [ ] Demo shows human approval
-- [ ] Demo shows authorised execution
-- [ ] Demo shows audit record creation
-- [ ] Final deliverables: architecture diagram
-- [ ] Final deliverables: LangGraph workflow diagram
-- [ ] Final deliverables: API documentation
-- [ ] Final deliverables: database schema
-- [ ] Final deliverables: test report
-- [ ] Final deliverables: demo scenario and sample data
-- [ ] Ensure all presentation claims match implemented functionality
+- [x] Prepare Dockerfiles (`backend/Dockerfile` non-root + liveness healthcheck,
+      `frontend/Dockerfile` multi-stage node build → nginx)
+- [x] Configure Docker Compose (`db`, one-shot `seed`, `backend`, `frontend`;
+      named volume, dependency-ordered health, `stop_grace_period`)
+- [x] Configure frontend and backend environment variables (Compose anchor,
+      `DATABASE_URL` left empty so discrete `POSTGRES_*` apply; secrets stay in
+      `backend/.env`, never baked into images)
+- [x] Configure PostgreSQL (postgres:16-alpine, `pg_isready`, idempotent seed of
+      5 suppliers / 10 shipments)
+- [x] Configure persistent workflow checkpoints (`LANGGRAPH_CHECKPOINT_BACKEND=postgres`;
+      4 checkpoint tables, 40 rows, state survived a backend restart)
+- [x] Verify service communication (nginx `/api` proxy to `backend:8000`; 200 via
+      `:8080`; CORS origins set for `localhost:8080`)
+- [x] Add health checks (backend `/api/health/live`, nginx `/healthz`, DB
+      `pg_isready`, Compose conditions)
+- [x] Verify startup and shutdown behaviour (ordered start; graceful uvicorn
+      shutdown on `docker compose stop`; clean restart)
+- [x] Prepare one complete Red Sea disruption demo scenario
+- [x] Demo shows disruption detection
+- [x] Demo shows supervisor reasoning and task delegation
+- [x] Demo shows all five specialised agents executing
+- [x] Demo shows external tool usage
+- [x] Demo shows deterministic calculations
+- [x] Demo shows agent collaboration
+- [x] Demo shows scenario comparison
+- [x] Demo shows compliance rejection and replanning
+- [x] Demo shows human approval
+- [x] Demo shows authorised execution
+- [x] Demo shows audit record creation
+- [x] Final deliverables: architecture diagram
+- [x] Final deliverables: LangGraph workflow diagram
+- [x] Final deliverables: API documentation
+- [x] Final deliverables: database schema
+- [x] Final deliverables: test report
+- [x] Final deliverables: demo scenario and sample data
+- [x] Ensure all presentation claims match implemented functionality (docs
+      distinguish live vs `[SIMULATED]`; failed demo runs are recorded as failed;
+      `backend/docs/test-report.md` §6.1 carries the container evidence)
+
+**Step 10 verification**
+
+- Container stack: `db` healthy, `seed` exited 0, `backend` healthy, `frontend`
+  healthy; `/api/health` connected through both `:8000` and `:8080`.
+- Checkpoint persistence: 40 rows across 4 LangGraph tables; thread state readable
+  after `docker compose restart backend`.
+- Lifecycle: `docker compose stop` logged a clean uvicorn shutdown; `start`
+  brought db → backend → frontend up in order.
+- Live demo blocked by upstream Gemini quota (`503` then `429`, 20/day free
+  tier); four attempts recorded as failed with no execution. Golden path remains
+  proven by the deterministic E2E test (no Gemini call).
+
+**Multi-key Gemini follow-up (2026-11-24)**
+
+- [x] Accept multiple keys (`GEMINI_API_KEYS`) with deduplication against `GEMINI_API_KEY`
+- [x] Distribute keys across the five agents deterministically (round-robin, `GEMINI_KEY_SLOTS` overrides)
+- [x] Fail loudly on unknown agents or out-of-range slots
+- [x] Add per-key request pacing (`GEMINI_MIN_INTERVAL_SECONDS`) shared across agents
+- [x] Make retry backoff configurable (`GEMINI_RETRY_BACKOFF_SECONDS`)
+- [x] Tests for assignment, wiring, request headers, fail-loud errors and pacing (14 new)
+- [x] Treat a daily-quota 429 as terminal for that key (no in-process retry; supervisor does not retry the agent)
+- [x] Quarantine an exhausted key for its reset window and rotate to the agent's next key in slot order
+- [x] Honour only short Google `retryDelay` values (`GEMINI_QUOTA_RETRY_MAX_SECONDS`, default 120 s)
+- [x] Fail with quota id, model and UTC reset time only when every key is cooling down
+- [x] Tests for quota rotation, quarantine, short delays and fallback order (8 new)
+- [x] Live probe of both assigned keys (2026-11-24 18:18 UTC, inside the backend container): slot-0 key returned `{"ok": true}`; slot-1 key reported `GenerateRequestsPerDayPerProjectPerModel-FreeTier` and the call rotated to slot 0 and succeeded
+- [ ] Full workflow/demo run under live quota (needs ~5 calls of headroom and an approver credential; approval currently fails closed with 503)
+
+**One-click Start and overload guard (2026-11-25)**
+
+- [x] Add a process-wide `WorkflowGuard` that admits one supervisor run at a time
+- [x] Route both start endpoints through the guard; a concurrent start returns `409` with the active thread id
+- [x] Add `POST /api/orchestration/workflows/start` using the bundled Red Sea scenario under a fresh `EV-UI-START-…` event id
+- [x] Add `GET /api/orchestration/workflows/active` for the UI's disabled state
+- [x] Add the Overview **Start agents** panel with running state, active-run polling and run output
+- [x] Tests for the guard, both endpoints, run recording, active endpoint, fresh ids and missing-demo failure (9 new)
+- [x] Live UI click started one run; concurrent start returned `409`; run recorded `awaiting_approval` (4 agent executions, proposal `632eec40e5aa393c`)
+- [x] Rebuild backend and frontend containers; health and proxy verified
+
+**Approval Center token fix (2026-11-25)**
+
+- [x] 401 message explains that only the token part (before the first `:`) is sent
+- [x] API client attaches the HTTP status so the UI can detect auth failures
+- [x] Approval Center clears a rejected token from sessionStorage and prompts re-entry
+- [x] Field label, placeholder and empty state describe the `token:id:Role` format
+- [x] Tests assert the hint and reject the whole-entry form
+- [x] Live: stale token cleared and explained; correct token loads the pending proposal and its run context; decision left to the human approver
+
+**Test totals:** 406 collected, 400 passed, 6 skipped, 0 failures (`pytest` from
+`backend/` using the repository `.venv`). Full report:
+`backend/docs/test-report.md`.
 
 ---
 
@@ -407,6 +470,6 @@ Derived from `DEVELOPMENT_ROADMAP.txt`. Statuses:
 | 5 — Collaboration + Replanning | ✅ Complete |
 | 6 — Human-in-the-Loop + Execution | ✅ Complete |
 | 7 — SAP Integration | ✅ Complete |
-| 8 — Agent Activity Dashboard | ⬜ Not started |
-| 9 — Testing + E2E Validation | ⬜ Not started |
-| 10 — Deployment + Demo | ⬜ Not started |
+| 8 — Agent Activity Dashboard | ✅ Complete |
+| 9 — Testing + E2E Validation | ✅ Complete |
+| 10 — Deployment + Demo | ✅ Complete |

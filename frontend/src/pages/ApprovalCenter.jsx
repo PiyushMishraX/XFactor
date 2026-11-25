@@ -75,6 +75,17 @@ export default function ApprovalCenter() {
         const data = await getPendingApprovals(activeToken)
         setPending(data.pending ?? [])
       } catch (err) {
+        if (err.status === 401) {
+          // A rejected token must not linger in sessionStorage as a masked value;
+          // clear it so the approver sees the token prompt and the reason.
+          sessionStorage.removeItem(TOKEN_STORAGE_KEY)
+          setToken('')
+          setTokenDraft('')
+          setPending([])
+          setSelected(null)
+          setOutcome(null)
+          setExecution(null)
+        }
         setError(err.message)
       } finally {
         setBusy(false)
@@ -140,6 +151,16 @@ export default function ApprovalCenter() {
       const data = await getPendingApprovals(token)
       setPending(data.pending ?? [])
     } catch (err) {
+      if (err.status === 401) {
+        sessionStorage.removeItem(TOKEN_STORAGE_KEY)
+        setToken('')
+        setTokenDraft('')
+        setPending([])
+        setSelected(null)
+        setOutcome(null)
+        setExecution(null)
+        setComment('')
+      }
       setError(err.message)
     } finally {
       setBusy(false)
@@ -197,14 +218,14 @@ export default function ApprovalCenter() {
 
       <form className="token-form" onSubmit={saveToken}>
         <label className="field">
-          <span className="field__label">Approver bearer token</span>
+          <span className="field__label">Approver bearer token (token part only)</span>
           <input
             className="input"
             type="password"
             autoComplete="off"
             value={tokenDraft}
             onChange={(event) => setTokenDraft(event.target.value)}
-            placeholder="Token from APPROVER_CREDENTIALS"
+            placeholder="Token before the first ':' in APPROVER_CREDENTIALS"
           />
         </label>
         <button type="submit" className="button" disabled={busy}>
@@ -216,8 +237,9 @@ export default function ApprovalCenter() {
 
       {!token ? (
         <EmptyState title="Approver token required">
-          Enter a token configured in <span className="mono">APPROVER_CREDENTIALS</span>. Every
-          approval endpoint fails closed without an authenticated approver.
+          Enter only the token part of an <span className="mono">APPROVER_CREDENTIALS</span> entry
+          — the text before the first colon, not the whole <span className="mono">token:id:Role</span>{' '}
+          entry. Every approval endpoint fails closed without an authenticated approver.
         </EmptyState>
       ) : (
         <div className="split split--wide-left">

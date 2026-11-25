@@ -33,7 +33,9 @@ async function request(path, options = {}) {
     } catch {
       // The backend did not return JSON; keep the status message.
     }
-    throw new Error(detail)
+    const error = new Error(detail)
+    error.status = response.status
+    throw error
   }
 
   return response.json()
@@ -82,6 +84,16 @@ export function startWorkflow(requestBody) {
     method: 'POST',
     body: JSON.stringify(requestBody),
   })
+}
+
+/** One-click start: run the bundled scenario through all five agents once. */
+export function startAgents() {
+  return request('/orchestration/workflows/start', { method: 'POST' })
+}
+
+/** Whether a supervisor run holds the single-flight slot right now. */
+export function getActiveWorkflow() {
+  return request('/orchestration/workflows/active')
 }
 
 /** Control-tower KPI counts and the latest recorded runs. */

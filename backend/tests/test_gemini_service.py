@@ -27,7 +27,7 @@ SIMPLE_SCHEMA: Dict[str, Any] = {
 
 
 def settings_with_key(key: str = "test-key") -> Settings:
-    return Settings(GEMINI_API_KEY=key, GEMINI_MODEL="gemini-3.5-flash")
+    return Settings(_env_file=None, GEMINI_API_KEY=key, GEMINI_MODEL="gemini-3.5-flash")
 
 
 def envelope(payload: Dict[str, Any]) -> Dict[str, Any]:

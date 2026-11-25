@@ -1,0 +1,84 @@
+{
+  "thread_id": "EV-DEMO-RED-SEA-REPLAN",
+  "request": {
+    "disruption_report": {
+      "event_id": "EV-DEMO-RED-SEA-REPLAN",
+      "headline": "Militant attack closes the Bab-el-Mandeb route",
+      "description": "Maersk suspended Red Sea transits after attacks on merchant vessels. Shipment SH001 (Pharmaceutical API, Mumbai to Rotterdam) is delayed and needs a reroute or inventory cover at Rotterdam DC.",
+      "source": "Maritime security alert feed",
+      "reported_at": "2026-11-22T17:45:00Z",
+      "location_hint": "Bab-el-Mandeb, Red Sea"
+    },
+    "scenario_request": {
+      "event_id": "EV-DEMO-RED-SEA-REPLAN",
+      "disruption_type": "Maritime Security Threat",
+      "location": "Bab-el-Mandeb, Red Sea",
+      "severity": "High",
+      "origin": "Mumbai",
+      "destination": "Rotterdam",
+      "cargo_value_usd": 1250000.0,
+      "container_count": 4,
+      "transport_mode": "Sea",
+      "current_carrier": "Maersk",
+      "available_budget_usd": 500000.0,
+      "congestion_days": 4,
+      "risk_factors": [
+        "Active physical threat to vessels, cargo or personnel",
+        "Route closure or forced diversion",
+        "Carrier suspended or reduced service",
+        "Reported schedule delay",
+        "Disruption is ongoing or unresolved"
+      ],
+      "inventory": {
+        "material_id": "MAT-PHARMA-001",
+        "target_plant": "Rotterdam DC",
+        "demand_forecast": 20000.0,
+        "committed": 2000.0,
+        "average_daily_demand": 400.0,
+        "lead_time_days": 7.0,
+        "demand_std_dev": 100.0,
+        "lead_time_std_dev": 2.0,
+        "service_level_percent": 95.0
+      }
+    },
+    "applicable_rules": [
+      {
+        "rule_id": "POL-MAX-SPEND",
+        "description": "A single recovery action may not exceed the delegated spend limit.",
+        "rule_type": "Max spend",
+        "max_value": 5000000.0
+      },
+      {
+        "rule_id": "POL-BUDGET-APPROVAL",
+        "description": "Spend above the approval threshold needs a human sign-off.",
+        "rule_type": "Budget approval required",
+        "max_value": 250000.0
+      },
+      {
+        "rule_id": "POL-CARRIER-RELIABILITY",
+        "description": "Recovery must not use a carrier below the reliability floor.",
+        "rule_type": "Minimum carrier reliability",
+        "max_value": 0.6
+      },
+      {
+        "rule_id": "POL-RESTRICTED-COUNTRIES",
+        "description": "A recovery route may not touch a restricted country.",
+        "rule_type": "Restricted country",
+        "blocked_values": ["Russia", "Belarus", "North Korea", "Iran", "Syria"]
+      },
+      {
+        "rule_id": "POL-DEMO-MAX-LEAD-TIME",
+        "description": "The recovery must arrive within eighteen days; this deliberately rejects the slower Sea alternatives and forces the supervisor to request a revision.",
+        "rule_type": "Max lead time",
+        "max_value": 18.0
+      }
+    ],
+    "supplier_id": "SUP001",
+    "supplier_risk_tier": "Medium",
+    "origin_country": "India",
+    "destination_country": "Netherlands",
+    "transit_countries": ["Egypt", "Saudi Arabia"],
+    "certifications": ["GDP", "WHO-GMP"],
+    "is_high_impact_reroute": true
+  }
+}

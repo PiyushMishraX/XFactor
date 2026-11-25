@@ -363,8 +363,14 @@ def test_authenticate_maps_tokens_to_identities() -> None:
 
     with pytest.raises(ApproverAuthenticationError):
         authorizer.authenticate("")
-    with pytest.raises(ApproverAuthenticationError):
+    with pytest.raises(ApproverAuthenticationError) as unknown:
         authorizer.authenticate("not-a-configured-token")
+    assert "before the first colon" in str(unknown.value)
+
+    # Pasting the whole APPROVER_CREDENTIALS entry is the common misconfiguration.
+    with pytest.raises(ApproverAuthenticationError) as whole_entry:
+        authorizer.authenticate(f"{DIRECTOR_TOKEN}:bob:Director")
+    assert "not the whole entry" in str(whole_entry.value)
 
 
 def test_role_hierarchy_enforces_the_approval_level() -> None:
@@ -902,6 +908,7 @@ def test_approval_endpoints_require_a_bearer_token(api: Any) -> None:
 
     wrong = client.get("/api/approvals/pending", headers=_bearer("not-a-token"))
     assert wrong.status_code == 401
+    assert "before the first colon" in wrong.json()["detail"]
 
     scheme = client.get(
         "/api/approvals/pending", headers={"Authorization": "Basic abc"}

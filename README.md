@@ -83,7 +83,11 @@ X Factor/
 │   │   ├── config/            Settings and logging configuration
 │   │   └── utils/             Shared helpers
 │   ├── tests/                 pytest test-suite
-│   ├── docs/                  Workflow, collaboration, approval, SAP and dashboard notes
+│   ├── demo/                  Red Sea demo scenario payloads
+│   ├── docs/                  Architecture, deployment, API, schema, workflow,
+│   │                          collaboration, approval, SAP, dashboard and
+│   │                          validation notes
+│   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── pytest.ini
 │   └── .env.example
@@ -97,8 +101,11 @@ X Factor/
 │   │   ├── constants/         Agent metadata and navigation
 │   │   ├── utils/             Formatting helpers
 │   │   └── assets/            Static assets
+│   ├── Dockerfile             Vite build + nginx
+│   ├── nginx.conf             SPA fallback and /api proxy
 │   ├── vite.config.js         Dev server + /api proxy
 │   └── .env.example
+├── docker-compose.yml         PostgreSQL + seed + backend + frontend
 ├── MASTER_INSTRUCTIONS.txt    Development rules
 ├── DEVELOPMENT_ROADMAP.txt    Step-by-step implementation roadmap
 ├── PROJECT_PROGRESS.md        Recovery file — current state
@@ -158,6 +165,8 @@ cd "d:\X Factor\backend"
 | `GET /api/health` | Service + PostgreSQL health |
 | `GET /api/health/live` | Liveness probe (no dependencies) |
 | `POST /api/orchestration/workflows` | Start a supervisor recovery run |
+| `POST /api/orchestration/workflows/start` | One-click Start: the bundled demo scenario, once, under a fresh event id |
+| `GET /api/orchestration/workflows/active` | Whether a supervisor run currently holds the single-flight slot |
 | `GET /api/orchestration/workflows/{thread_id}/state` | Read the last saved workflow state |
 | `GET /api/approvals/pending` | Proposals awaiting an authenticated decision |
 | `GET /api/approvals/{thread_id}` | One proposal with its full decision history |
@@ -175,6 +184,14 @@ The `/api/approvals/*` endpoints require `Authorization: Bearer <token>` and
 return `503` until `APPROVER_CREDENTIALS` is configured. The unauthenticated
 Step 4 resume endpoint was replaced by these authenticated decision endpoints.
 
+Both start endpoints are admitted through one process-wide single-flight guard:
+while a run is in flight, another start returns `409` with the active thread id,
+so repeated clicks, extra tabs and the shipment form cannot launch overlapping
+five-agent runs. The dashboard's **Start agents** button and the active-run
+status endpoint use the same slot. This assumes the single-uvicorn-worker
+deployment in the Compose stack; horizontal scaling would need a database
+advisory lock instead.
+
 ### Frontend (http://localhost:5173)
 
 ```powershell
@@ -184,6 +201,26 @@ npm run dev
 
 The Vite dev server proxies `/api/*` to `http://127.0.0.1:8000`, so the frontend
 never needs CORS or a hard-coded backend host.
+
+### Docker Compose (demo deployment)
+
+```powershell
+cd "d:\X Factor"
+# backend\.env must contain GEMINI_API_KEY and (for approvals) APPROVER_CREDENTIALS
+docker compose up --build -d
+```
+
+| Service | URL | Notes |
+| --- | --- | --- |
+| Frontend | `http://localhost:8080` | nginx serves the SPA and proxies `/api` |
+| Backend | `http://localhost:8000` | API docs at `/docs`, health at `/api/health` |
+| PostgreSQL | internal `db:5432` | Named volume `postgres-data` keeps runs, approvals and checkpoints |
+| Seed | one-shot | Idempotently loads 5 suppliers and 10 shipments |
+
+`docker compose down` keeps the data volume; `down -v` is destructive. See
+[backend/docs/deployment.md](backend/docs/deployment.md) for health checks,
+startup/shutdown behaviour, environment wiring and troubleshooting, and
+[backend/docs/demo-script.md](backend/docs/demo-script.md) for the walkthrough.
 
 ---
 
@@ -200,6 +237,8 @@ Names only — never commit real values.
 | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` | PostgreSQL connection |
 | `DB_CONNECT_TIMEOUT` | Database connect timeout (seconds) |
 | `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_TIMEOUT_SECONDS` | Gemini LLM reasoning |
+| `GEMINI_API_KEYS`, `GEMINI_KEY_SLOTS` | Extra keys and per-agent assignment (round-robin by default) |
+| `GEMINI_MIN_INTERVAL_SECONDS`, `GEMINI_RETRY_BACKOFF_SECONDS`, `GEMINI_QUOTA_RETRY_MAX_SECONDS` | Per-key request spacing, retry backoff and short quota-wait ceiling |
 | `LANGGRAPH_MAX_ITERATIONS`, `LANGGRAPH_CHECKPOINT_BACKEND` | Orchestration limits |
 | `APPROVER_CREDENTIALS` | Comma-separated `token:approver_id:Role` approver tokens (approval API returns 503 until set) |
 | `EXECUTION_USE_MOCK`, `EXECUTION_BASE_URL`, `EXECUTION_CLIENT_ID`, `EXECUTION_CLIENT_SECRET`, `EXECUTION_TIMEOUT_SECONDS`, `EXECUTION_MAX_ATTEMPTS` | Authorized execution (simulated by default) |
@@ -227,49 +266,71 @@ npm run build
 
 ## Current status
 
-**Phase: Step 9 — Testing and End-to-End Validation (complete).**
+**Phase: Step 10 — Deployment and Hackathon Demonstration (complete).**
 
-Steps 0–8 delivered the platform skeleton, Gemini reasoning, the deterministic
+Steps 0–9 delivered the platform skeleton, Gemini reasoning, the deterministic
 tools, all five specialised agents, the compiled LangGraph supervisor, the
 auditable collaboration layer, the authenticated approval and execution path,
-the SAP read/write boundary and the control-tower dashboard.
+the SAP read/write boundary, the control-tower dashboard, and a validated
+end-to-end product.
 
-Step 9 validated the whole product without adding features:
+Step 10 packaged and documented the product without changing its logic:
 
-- a **deterministic end-to-end test** drives the Mumbai → Rotterdam
-  pharmaceutical maritime disruption through all five agents, deterministic
-  calculations, the approval interrupt, a Director decision and three labelled
-  `[SIMULATED]` executions, and proves a replay is refused;
-- **live approval and execution** were completed on a recorded workflow
-  (`EV-UI-VERIFY-003`): `401`/`403`/`409` boundaries, Director approval,
-  idempotent execution and a refreshed `workflow_runs` row;
-- **checkpoint persistence** was proven by approving a run created before
-  several backend restarts;
-- **failure handling** is covered for Gemini unavailability/quota, HTTP timeout,
-  invalid model output, missing shipment, no viable route, insufficient
-  inventory, compliance violation, rejection, duplicate execution and database
-  outage;
-- **three defects were found and fixed**: the scenario path never passed the
-  inventory transfer to audit/approval/execution, the Rotterdam DC pharma
-  inventory position was missing, and three paths had no tests.
+- **Docker images** for the backend and frontend (nginx serving the built SPA and
+  reverse-proxying `/api` to the backend, so the browser stays same-origin);
+- **Docker Compose** with PostgreSQL 16, a one-shot idempotent seed job, the
+  backend with PostgreSQL LangGraph checkpoints, and dependency-ordered health
+  checks and restart behaviour;
+- a **Red Sea demo scenario** (Mumbai → Rotterdam pharma, `SH001`/`SUP001`) plus
+  a replan variant that triggers a deterministic compliance rejection, and
+  `scripts/run_demo_scenario.py` to drive it with an authenticated decision;
+- deliverable documentation: architecture, LangGraph diagram, API reference,
+  database schema, deployment guide, demo script and this test report.
 
-A live Mumbai replay was blocked by the Gemini free-tier daily quota (`429`,
-20 requests/day for `gemini-3.6-flash`); the failed runs are recorded honestly.
-See [backend/docs/validation-report.md](backend/docs/validation-report.md) for
-the full 17-point audit, failure matrix and limitations.
+Verified live: all four containers healthy, seed loaded 5 suppliers / 10
+shipments, the `/api` proxy works through `:8080`, 40 checkpoints persisted in
+PostgreSQL and survived a backend restart, stop/start is clean and ordered, and
+approvals fail closed without a credential. The live demo itself is blocked by
+the Gemini free-tier daily quota (`503` then `429`); the failed runs are recorded
+honestly and no execution occurred. Gemini failures are now handled as the quota
+error they are: an exhausted key is quarantined and the call rotates to the next
+configured key, short per-minute retry delays are honoured, and a run fails fast
+with the quota id and reset time only when every key is out. A live probe on
+2026-11-24 confirmed the slot-0 key answers and an exhausted slot-1 key rotates to
+slot 0 and succeeds; the full demo still needs ~5 calls of headroom. The
+authoritative golden-path proof is the deterministic end-to-end test, which does
+not call Gemini.
 
-Backend suite: **368 passed, 6 skipped** (the skips are the opt-in
-`RUN_LIVE_GEMINI=1` tests; run pytest from `backend/`). Frontend build and lint
-pass.
+**One-click Start with single-flight admission:** the Overview page has a
+**Start agents** button that runs the validated Red Sea scenario once under a
+fresh `EV-UI-START-…` id and shows the run output (status, agents executed,
+proposal version, recommendation or errors) with links to Agent Activity and the
+Approval Center. The backend guard refuses a concurrent start with `409`; this
+was verified live on 2026-11-25 UTC: a UI click started a run, the button showed
+**Agents running…**, a second POST returned `409` naming the active thread, and
+the completed run recorded `awaiting_approval` with four agent executions and a
+proposal version. One transient Gemini `503` was retried by the supervisor and
+recorded truthfully.
 
-The next step is **Step 10 — Deployment and Hackathon Demonstration**
-(not started).
+Backend suite: **400 passed, 6 skipped** (406 collected; the skips are the opt-in
+`RUN_LIVE_GEMINI=1` tests; run pytest from `backend/` with the repository
+virtualenv). Frontend build and lint pass.
 
-Workflow details: [backend/docs/workflow.md](backend/docs/workflow.md),
-[backend/docs/collaboration.md](backend/docs/collaboration.md),
-[backend/docs/approval-and-execution.md](backend/docs/approval-and-execution.md),
-[backend/docs/sap-integration.md](backend/docs/sap-integration.md),
-[backend/docs/dashboard.md](backend/docs/dashboard.md) and
-[backend/docs/validation-report.md](backend/docs/validation-report.md).
+Start the demo with `docker compose up --build`, open
+<http://localhost:8080>, and follow
+[backend/docs/demo-script.md](backend/docs/demo-script.md).
+
+Documents: [architecture](backend/docs/architecture.md),
+[workflow](backend/docs/workflow.md),
+[LangGraph diagram](backend/docs/langgraph-workflow.mmd),
+[API](backend/docs/api.md), [database schema](backend/docs/database-schema.md),
+[collaboration](backend/docs/collaboration.md),
+[approval and execution](backend/docs/approval-and-execution.md),
+[SAP integration](backend/docs/sap-integration.md),
+[dashboard](backend/docs/dashboard.md),
+[deployment](backend/docs/deployment.md),
+[demo script](backend/docs/demo-script.md),
+[test report](backend/docs/test-report.md) and the
+[Step 9 validation report](backend/docs/validation-report.md).
 See [PROJECT_PROGRESS.md](PROJECT_PROGRESS.md) for the live status and
 [DEVELOPMENT_ROADMAP.txt](DEVELOPMENT_ROADMAP.txt) for the full roadmap.

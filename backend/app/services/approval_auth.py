@@ -127,7 +127,10 @@ class ApprovalAuthorizer:
             if secrets.compare_digest(candidate, entry.token):
                 matched = entry.identity
         if matched is None:
-            raise ApproverAuthenticationError("The bearer token is not recognised.")
+            raise ApproverAuthenticationError(
+                "The bearer token is not recognised. Send only the token part of an "
+                "APPROVER_CREDENTIALS entry (before the first colon), not the whole entry."
+            )
         return matched
 
     def authorize(self, identity: ApproverIdentity, approval_level: Optional[str]) -> None:
