@@ -1,0 +1,41 @@
+# X FACTOR — Render deployment specification.
+#
+# Create a Web Service in Render, connect this repo, and set Root Directory to `backend`.
+# Environment variables marked `sync: false` must be set manually in the Render dashboard.
+
+services:
+  - type: web
+    name: xfactor-backend
+    env: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: false
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_JSON
+        value: true
+      - key: API_PREFIX
+        value: /api
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEYS
+        sync: false
+      - key: LANGGRAPH_CHECKPOINT_BACKEND
+        value: postgres
+      - key: DB_CONNECT_TIMEOUT
+        value: 10
+      - key: APPROVER_CREDENTIALS
+        sync: false
+      - key: EXECUTION_USE_MOCK
+        value: true

@@ -1,0 +1,16 @@
+# X FACTOR — Cloudflare Pages deployment specification.
+#
+# Create a Pages project in Cloudflare, connect this repo, and set:
+#   Build command:  npm run build   (working directory: frontend)
+#   Build output:   dist
+#   Environment:    VITE_API_BASE_URL = https://<render-backend>.onrender.com/api
+
+name = "xfactor-frontend"
+compatibility_date = "2026-11-25"
+
+[build]
+  command = "npm run build"
+  destination = "dist"
+
+[env.production]
+  VITE_API_BASE_URL = "/api"
